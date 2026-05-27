@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="trail" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="50%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#ef4444"/>
+    </linearGradient>
+  </defs>
+  <!-- Ant trail dots -->
+  <circle cx="64" cy="256" r="6" fill="url(#trail)" opacity="0.3"/>
+  <circle cx="112" cy="244" r="6" fill="url(#trail)" opacity="0.35"/>
+  <circle cx="160" cy="238" r="6" fill="url(#trail)" opacity="0.4"/>
+  <circle cx="208" cy="240" r="6" fill="url(#trail)" opacity="0.45"/>
+  <circle cx="256" cy="248" r="6" fill="url(#trail)" opacity="0.5"/>
+  <circle cx="304" cy="260" r="6" fill="url(#trail)" opacity="0.55"/>
+  <circle cx="352" cy="268" r="5" fill="url(#trail)" opacity="0.6"/>
+  <circle cx="400" cy="272" r="5" fill="url(#trail)" opacity="0.65"/>
+  <circle cx="448" cy="270" r="5" fill="url(#trail)" opacity="0.7"/>
+  <circle cx="488" cy="262" r="4" fill="url(#trail)" opacity="0.75"/>
+  <!-- Ant 1 (lead ant) - largest, rightmost -->
+  <g transform="translate(452, 248) scale(0.9)">
+    <ellipse cx="0" cy="0" rx="22" ry="14" fill="#f97316"/>
+    <ellipse cx="26" cy="-2" rx="12" ry="10" fill="#f59e0b"/>
+    <circle cx="38" cy="-4" r="4" fill="#1a1a2e"/>
+    <!-- legs -->
+    <line x1="-8" y1="14" x2="-18" y2="30" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
+    <line x1="4" y1="14" x2="-2" y2="32" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
+    <line x1="16" y1="14" x2="16" y2="30" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
+    <!-- antennae -->
+    <line x1="38" y1="-4" x2="50" y2="-18" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+    <line x1="34" y1="-8" x2="40" y2="-24" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+  </g>
+  <!-- Ant 2 (middle) -->
+  <g transform="translate(348, 252) scale(0.75)">
+    <ellipse cx="0" cy="0" rx="22" ry="14" fill="#f97316"/>
+    <ellipse cx="26" cy="-2" rx="12" ry="10" fill="#f59e0b"/>
+    <circle cx="38" cy="-4" r="4" fill="#1a1a2e"/>
+    <line x1="-8" y1="14" x2="-18" y2="30" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
+    <line x1="4" y1="14" x2="-2" y2="32" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
+    <line x1="16" y1="14" x2="16" y2="30" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
+    <line x1="38" y1="-4" x2="50" y2="-18" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+    <line x1="34" y1="-8" x2="40" y2="-24" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+  </g>
+  <!-- Ant 3 (smallest, following) -->
+  <g transform="translate(252, 244) scale(0.6)">
+    <ellipse cx="0" cy="0" rx="22" ry="14" fill="#f97316"/>
+    <ellipse cx="26" cy="-2" rx="12" ry="10" fill="#f59e0b"/>
+    <circle cx="38" cy="-4" r="4" fill="#1a1a2e"/>
+    <line x1="-8" y1="14" x2="-18" y2="30" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
+    <line x1="4" y1="14" x2="-2" y2="32" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
+    <line x1="16" y1="14" x2="16" y2="30" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
+    <line x1="38" y1="-4" x2="50" y2="-18" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+    <line x1="34" y1="-8" x2="40" y2="-24" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+  </g>
+</svg>
