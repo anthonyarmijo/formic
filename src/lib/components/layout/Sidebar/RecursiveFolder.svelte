@@ -614,6 +614,33 @@
 					{/if}
 				</div>
 
+				{#if folders[folderId].data?.group_type === 'project' && folders[folderId].data?.project_path}
+					<div class="hidden group-hover:flex items-center gap-0.5 mr-1">
+						<a
+							href="vscode://file/{folders[folderId].data.project_path}"
+							class="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-800 transition"
+							title="Open in VS Code"
+							on:click={(e) => e.stopPropagation()}
+						>
+							<svg class="size-3.5" viewBox="0 0 24 24" fill="currentColor">
+								<path d="M23.15 2.587L18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261A1 1 0 0 0 .326 8.74L3.899 12 .326 15.26a1 1 0 0 0 .001 1.479L1.65 17.94a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 20.06V3.939a1.5 1.5 0 0 0-.85-1.352z"/>
+							</svg>
+						</a>
+						<a
+							href="cursor://file/{folders[folderId].data.project_path}"
+							class="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-800 transition"
+							title="Open in Cursor"
+							on:click={(e) => e.stopPropagation()}
+						>
+							<svg class="size-3.5" viewBox="0 0 24 24" fill="currentColor">
+								<rect x="2" y="2" width="20" height="20" rx="3" />
+								<path d="M7 7h4l2 5-2 5H7l2-5-2-5z" fill="white"/>
+								<path d="M13 7h4v10h-4z" fill="white"/>
+							</svg>
+						</a>
+					</div>
+				{/if}
+
 				<button
 					class="absolute z-10 right-2 invisible group-hover:visible self-center flex items-center dark:text-gray-300"
 				>
