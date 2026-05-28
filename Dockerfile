@@ -184,6 +184,16 @@ COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
 # copy backend files
 COPY --chown=$UID:$GID ./backend .
 
+# Replace upstream build/static assets with Formic-branded ones
+# (config.py overwrites backend static from build/static at runtime,
+# so we must fix the source of truth)
+RUN cp /app/backend/open_webui/static/favicon.png /app/build/static/favicon.png && \
+    cp /app/backend/open_webui/static/favicon-dark.png /app/build/static/favicon-dark.png && \
+    cp /app/backend/open_webui/static/favicon.svg /app/build/static/favicon.svg && \
+    cp /app/backend/open_webui/static/favicon-96x96.png /app/build/static/favicon-96x96.png && \
+    cp /app/backend/open_webui/static/splash.png /app/build/static/splash.png && \
+    cp /app/backend/open_webui/static/splash-dark.png /app/build/static/splash-dark.png
+
 EXPOSE 8080
 
 HEALTHCHECK CMD curl --silent --fail http://localhost:${PORT:-8080}/health | jq -ne 'input.status == true' || exit 1
