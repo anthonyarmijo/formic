@@ -12,6 +12,7 @@
 	import { toast } from 'svelte-sonner';
 
 	import { chatId, mobile, selectedFolder, showSidebar } from '$lib/stores';
+	import { terminalOpen, terminalProjectPath } from '$lib/stores/terminal';
 
 	import {
 		deleteFolderById,
@@ -36,6 +37,7 @@
 
 	import FolderOpen from '$lib/components/icons/FolderOpen.svelte';
 	import EllipsisHorizontal from '$lib/components/icons/EllipsisHorizontal.svelte';
+	import Terminal from '$lib/components/icons/Terminal.svelte';
 
 	import ChatItem from './ChatItem.svelte';
 	import FolderMenu from './Folders/FolderMenu.svelte';
@@ -638,6 +640,22 @@
 								<path d="M13 7h4v10h-4z" fill="white"/>
 							</svg>
 						</a>
+						<button
+							class="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-800 transition"
+							title="Open Terminal"
+							on:click={async (e) => {
+								e.stopPropagation();
+								const folder = await getFolderById(localStorage.token, folderId).catch(() => null);
+								if (folder) {
+									await selectedFolder.set(folder);
+									terminalProjectPath.set(folder.data?.project_path || '');
+									terminalOpen.set(true);
+									await goto('/');
+								}
+							}}
+						>
+							<Terminal className="size-3.5" strokeWidth="1.5" />
+						</button>
 					</div>
 				{/if}
 
