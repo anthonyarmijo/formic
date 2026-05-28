@@ -79,6 +79,12 @@ else
     ARGS=(--workers "$UVICORN_WORKERS")
 fi
 
+# Start bundled Open Terminal for Project group terminal access
+if command -v open-terminal &> /dev/null; then
+    echo "Starting Formic Terminal server..."
+    open-terminal run --host 127.0.0.1 --port 8000 --api-key formic-terminal-key &
+fi
+
 # Run uvicorn
 WEBUI_SECRET_KEY="$WEBUI_SECRET_KEY" exec "$PYTHON_CMD" -m uvicorn open_webui.main:app \
     --host "$HOST" \

@@ -196,6 +196,10 @@ RUN cp /app/backend/open_webui/static/favicon.png /app/build/static/favicon.png 
 
 EXPOSE 8080
 
+# Bundled Open Terminal — auto-configured for Project groups
+ENV TERMINAL_SERVER_CONNECTIONS='[{"id":"formic-terminal","name":"Formic Terminal","url":"http://localhost:8000","key":"formic-terminal-key","server_type":"terminal","enabled":true}]'
+RUN pip3 install --no-cache-dir open-terminal
+
 HEALTHCHECK CMD curl --silent --fail http://localhost:${PORT:-8080}/health | jq -ne 'input.status == true' || exit 1
 
 # Minimal, atomic permission hardening for OpenShift (arbitrary UID):
