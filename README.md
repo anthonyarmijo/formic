@@ -70,7 +70,7 @@ Formic Groups extend this:
 
 ## License
 
-Formic is [AGPL-3.0](LICENSE), inheriting from Open WebUI.
+Formic uses a dual license. Original Formic code is [MIT](LICENSE). Code inherited from Open WebUI remains under the [Open WebUI License](LICENSE.upstream) (BSD 3-clause with branding rider).
 
 ## Attribution
 
