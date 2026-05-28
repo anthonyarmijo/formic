@@ -640,23 +640,24 @@
 								<path d="M13 7h4v10h-4z" fill="white"/>
 							</svg>
 						</a>
-						<button
-							class="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-800 transition"
-							title="Open Terminal"
-							on:click={async (e) => {
-								e.stopPropagation();
-								const folder = await getFolderById(localStorage.token, folderId).catch(() => null);
-								if (folder) {
-									await selectedFolder.set(folder);
-									terminalProjectPath.set(folder.data?.project_path || '');
-									terminalOpen.set(true);
-									await goto('/');
-								}
-							}}
-						>
-							<Terminal className="size-3.5" strokeWidth="1.5" />
-						</button>
 					</div>
+
+					<button
+						class="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-800 transition flex-shrink-0 mr-1"
+						title="Open Terminal ({folders[folderId].data.project_path})"
+						on:click={async (e) => {
+							e.stopPropagation();
+							const folder = await getFolderById(localStorage.token, folderId).catch(() => null);
+							if (folder) {
+								await selectedFolder.set(folder);
+								terminalProjectPath.set(folder.data?.project_path || '');
+								terminalOpen.set(true);
+								await goto('/');
+							}
+						}}
+					>
+						<Terminal className="size-3.5" strokeWidth="1.5" />
+					</button>
 				{/if}
 
 				<button

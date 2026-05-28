@@ -6,6 +6,7 @@
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import XTerminal from './XTerminal.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
+	import Terminal from '$lib/components/icons/Terminal.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -141,20 +142,9 @@
 		<!-- Header Bar -->
 		<div class="flex-shrink-0 flex items-center justify-between px-3 py-1.5 bg-gray-900 border-b border-gray-800">
 			<div class="flex items-center gap-2 text-xs text-gray-400">
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					fill="none"
-					viewBox="0 0 24 24"
-					stroke-width="1.5"
-					stroke="currentColor"
-					class="size-3.5"
-				>
-					<path d="M13 16H18" stroke-linecap="round" stroke-linejoin="round" />
-					<path d="M6 8L10 12L6 16" stroke-linecap="round" stroke-linejoin="round" />
-					<path d="M2 18V6C2 4.89543 2.89543 4 4 4H20C21.1046 4 22 4.89543 22 6V18C22 19.1046 21.1046 20 20 20H4C2.89543 20 2 19.1046 2 18Z" stroke-linecap="round" stroke-linejoin="round" />
-				</svg>
-				<span class="truncate max-w-[200px]">{projectPath.split('/').pop() || 'Terminal'}</span>
-				<span class="text-gray-600">{projectPath}</span>
+					<Terminal className="size-3.5" strokeWidth="1.5" />
+					<span class="truncate max-w-[200px]">{projectPath.split('/').pop() || 'Terminal'}</span>
+					<span class="text-gray-600 truncate">{projectPath}</span>
 			</div>
 
 			<button
