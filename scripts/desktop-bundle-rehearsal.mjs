@@ -7,10 +7,11 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
-const defaultBundleDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'formic-server');
-const defaultPackageDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'packaged-app');
-const defaultRelocationDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'relocation path with spaces');
-const defaultRuntimeDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'runtime-data');
+const defaultRehearsalRoot = path.join(repoRoot, 'build', 'desktop-rehearsal');
+const defaultBundleDir = path.join(defaultRehearsalRoot, 'formic-server');
+const defaultPackageDir = path.join(defaultRehearsalRoot, 'packaged-app');
+const defaultRelocationDir = path.join(defaultRehearsalRoot, 'relocation path with spaces');
+const defaultRuntimeDir = path.join(defaultRehearsalRoot, 'runtime-data');
 const defaultPort = 18080;
 const defaultTimeoutMs = 180000;
 const managedPythonRequest = '3.11';
@@ -102,6 +103,9 @@ function parseArgs(argv) {
       'smoke',
       'resources-package',
       'resources-smoke',
+      'resources-managed-package',
+      'resources-managed-smoke',
+      'resources-managed-adhoc-sign-check',
       'audit',
       'relocation-smoke',
       'managed-build',
@@ -173,6 +177,30 @@ async function pathExists(value) {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function withRehearsalLock(command, callback) {
+  const lockDir = path.join(defaultRehearsalRoot, '.command-lock');
+  await mkdir(defaultRehearsalRoot, { recursive: true });
+
+  try {
+    await mkdir(lockDir);
+    await writeFile(path.join(lockDir, 'pid'), `${process.pid}\n${command}\n`);
+  } catch (error) {
+    if (error && error.code === 'EEXIST') {
+      throw new Error(
+        `Another desktop rehearsal command is already running. Remove ${displayPath(lockDir)} only if that process is gone.`
+      );
+    }
+
+    throw error;
+  }
+
+  try {
+    return await callback();
+  } finally {
+    await rm(lockDir, { recursive: true, force: true });
   }
 }
 
@@ -317,6 +345,9 @@ async function buildBundle(options) {
   await mkdir(bundleDir, { recursive: true });
   const backendFileCount = await copyTrackedBackend(bundleDir);
   await copyRootContext(bundleDir);
+  await rm(path.join(bundleDir, 'venv'), { recursive: true, force: true });
+  await rm(path.join(bundleDir, 'python-runtime'), { recursive: true, force: true });
+  await rm(path.join(bundleDir, 'requirements.lock.txt'), { force: true });
 
   if (!options.skipSync) {
     await run('uv', ['sync', '--frozen', '--project', bundleDir, '--no-dev', '--no-install-project']);
@@ -788,8 +819,8 @@ async function findPackagedApp(packageDir) {
   };
 }
 
-async function packageResourcesApp(options) {
-  const bundleDir = await buildBundle(options);
+async function packageResourcesApp(options, { managed = false } = {}) {
+  const bundleDir = managed ? await buildManagedRuntimeBundle(options) : await buildBundle(options);
   await run('npm', ['run', 'build', '--workspace', '@formic/desktop']);
 
   const packageDir = path.resolve(options.packageDir);
@@ -829,11 +860,11 @@ async function stopProcessGroup(child) {
   }
 }
 
-function assertPackagedResourceLaunchOutput(output, packagedApp) {
+function assertPackagedResourceLaunchOutput(output, packagedApp, expectedLaunchMarker = 'bundled venv') {
   assertNoStartupFailureOutput(output);
 
-  if (!output.includes('bundled venv')) {
-    throw new Error('Electron did not report the packaged bundled venv launch plan.');
+  if (!output.includes(expectedLaunchMarker)) {
+    throw new Error(`Electron did not report the packaged launch plan: ${expectedLaunchMarker}`);
   }
 
   if (!output.includes(packagedApp.serverDir)) {
@@ -851,15 +882,19 @@ async function ensurePortAvailable(port) {
   throw new Error(`Port ${port} already has a healthy Formic backend. Choose another port with --port.`);
 }
 
-async function smokePackagedResources(options) {
-  const packagedApp = await packageResourcesApp(options);
+async function smokePackagedResources(options, { managed = false } = {}) {
+  const packagedApp = await packageResourcesApp(options, { managed });
+  if (managed) {
+    await auditBundle({ ...options, bundleDir: packagedApp.serverDir });
+  }
+
   await ensurePortAvailable(options.port);
 
   const serverUrl = `http://127.0.0.1:${options.port}`;
   const customRuntimeRoot = Boolean(process.env.FORMIC_REHEARSAL_RUNTIME_DIR);
   const runtimeRoot = customRuntimeRoot
     ? path.resolve(repoRoot, process.env.FORMIC_REHEARSAL_RUNTIME_DIR)
-    : path.join(defaultRuntimeDir, `resources-smoke-${options.port}`);
+    : path.join(defaultRuntimeDir, `${managed ? 'resources-managed-smoke' : 'resources-smoke'}-${options.port}`);
   const runtimeDataDir = path.join(runtimeRoot, 'data');
   const runtimeStaticDir = path.join(runtimeRoot, 'backend-static');
 
@@ -919,14 +954,28 @@ async function smokePackagedResources(options) {
       }
     }, options.timeoutMs, () => assertNoStartupFailureOutput(output));
 
-    assertPackagedResourceLaunchOutput(output, packagedApp);
+    assertPackagedResourceLaunchOutput(output, packagedApp, managed ? 'bundled managed Python runtime' : 'bundled venv');
 
     console.log(
-      `[formic-rehearsal] Packaged resources smoke passed: /health, /ready, /api/version=${version.version}`
+      `[formic-rehearsal] Packaged resources ${managed ? 'managed ' : ''}smoke passed: /health, /ready, /api/version=${version.version}`
     );
   } finally {
     await stopProcessGroup(electron);
   }
+}
+
+async function localOnlyAdHocSignCheck(options) {
+  if (process.platform !== 'darwin') {
+    throw new Error('The local-only ad-hoc signing check currently expects macOS codesign.');
+  }
+
+  const packagedApp = await packageResourcesApp(options, { managed: true });
+  await auditBundle({ ...options, bundleDir: packagedApp.serverDir });
+
+  console.log('[formic-rehearsal] Local-only ad-hoc signing check: codesign --sign - is not Developer ID signing or notarization.');
+  await run('codesign', ['--force', '--deep', '--sign', '-', packagedApp.appDir]);
+  await run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', packagedApp.appDir]);
+  console.log(`[formic-rehearsal] Local-only ad-hoc signing check passed: ${displayPath(packagedApp.appDir)}`);
 }
 
 async function smokeBundle(
@@ -1056,6 +1105,10 @@ async function main() {
     return;
   }
 
+  await withRehearsalLock(options.command, () => runCommand(options));
+}
+
+async function runCommand(options) {
   if (options.command === 'build') {
     await buildBundle(options);
     return;
@@ -1081,6 +1134,21 @@ async function main() {
     return;
   }
 
+  if (options.command === 'resources-managed-package') {
+    await packageResourcesApp(options, { managed: true });
+    return;
+  }
+
+  if (options.command === 'resources-managed-smoke') {
+    await smokePackagedResources(options, { managed: true });
+    return;
+  }
+
+  if (options.command === 'resources-managed-adhoc-sign-check') {
+    await localOnlyAdHocSignCheck(options);
+    return;
+  }
+
   if (options.command === 'relocation-smoke') {
     await smokeRelocatedBundle(options);
     return;
@@ -1092,7 +1160,6 @@ async function main() {
   }
 
   await smokeBundle(options);
-  process.exit(0);
 }
 
 main().catch((error) => {

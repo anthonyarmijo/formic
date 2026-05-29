@@ -56,7 +56,7 @@ The smoke command rebuilds the rehearsal bundle, builds `@formic/desktop`, launc
 
 ## Packaged Resources Rehearsal
 
-The next Phase 0 proof packages an unsigned local `.app` directory and places the same server bundle where Electron will look in a packaged app:
+The packaged resources rehearsal packages an unsigned local `.app` directory and places the server bundle where Electron will look in a packaged app:
 
 ```sh
 npm run desktop:resources:smoke
@@ -68,9 +68,20 @@ To create the packaged layout without launching the smoke:
 
 ```sh
 npm run desktop:resources:package
+npm run desktop:resources:managed-package
 ```
 
-The electron-builder config is `electron-builder.desktop.cjs`. It keeps app code in `app.asar` while copying `formic-server/` as `extraResources`, so Python, backend files, lock/context files, and `.venv/` remain directly executable under `Contents/Resources/formic-server`.
+The electron-builder config is `electron-builder.desktop.cjs`. It keeps app code in `app.asar` while copying `formic-server/` as `extraResources`, so Python, backend files, lock/context files, and either `.venv/` or `python-runtime/` remain directly executable under `Contents/Resources/formic-server`.
+
+The managed packaged-resources proof uses the same unsigned `.app` resources path with `python-runtime/` instead of the copied uv `.venv`:
+
+```sh
+npm run desktop:resources:managed-smoke
+```
+
+This builds the managed `formic-server`, packages it under `build/desktop-rehearsal/packaged-app/mac-arm64/Formic.app/Contents/Resources/formic-server`, launches the packaged app with `FORMIC_SERVER_BUNDLE_DIR` removed, confirms Electron reports `bundled managed Python runtime`, audits the packaged resources server, then checks `/health`, `/ready`, and `/api/version`.
+
+The copied `.venv` resources command remains as a comparison proof, but the managed resources command is the primary Phase 0 packaging path.
 
 ## Python Artifact Audit
 
@@ -102,19 +113,31 @@ The managed bundle removes `.venv`/`venv`, writes `python-runtime/`, exports the
 
 Current result: Electron reports `FORMIC_SERVER_BUNDLE_DIR managed Python runtime`, the selected Python resolves inside `formic-server`, and `/health`, `/ready`, and `/api/version` pass. This makes managed-runtime the Phase 0 packaging strategy to keep proving. Remaining signing risks are the large runtime/dependency payload, hundreds of native libraries, and generated console scripts with absolute shebangs; the sidecar launch itself avoids those scripts by using `python -m uvicorn`.
 
+The managed runtime now also passes from the unsigned packaged `.app` resources path. Electron reports `bundled managed Python runtime` with no `FORMIC_SERVER_BUNDLE_DIR`, and `/health`, `/ready`, and `/api/version` pass from the sidecar under `Contents/Resources/formic-server`.
+
+## Local Signing Check
+
+A local-only recursive ad-hoc signing check is available for the managed packaged app:
+
+```sh
+npm run desktop:resources:managed-adhoc-sign-check
+```
+
+It packages the managed runtime under `Contents/Resources/formic-server`, audits the packaged Python artifact, runs `codesign --force --deep --sign -`, and verifies with `codesign --verify --deep --strict`. This is not Developer ID signing, is not notarization, and does not prove Gatekeeper acceptance.
+
 ## Decision Notes
 
 - The Electron shell can check for an already-running backend before spawning its own process.
 - `FORMIC_SERVER_MODE=auto` checks for an existing backend, then spawns one if needed.
 - `FORMIC_SERVER_MODE=spawn` always owns the local FastAPI sidecar.
 - `FORMIC_SERVER_MODE=external` only connects to an already-running server and reports failure if it is unhealthy.
-- The sidecar path now supports the bundled-venv rehearsal: set `FORMIC_SERVER_BUNDLE_DIR` to a server root containing `backend/`, lock/context files, and `.venv` or `venv`, and Electron will require that bundled Python unless `FORMIC_PYTHON` is explicitly supplied.
+- The sidecar path now supports bundled Python rehearsals: set `FORMIC_SERVER_BUNDLE_DIR` to a server root containing `backend/`, lock/context files, and `.venv`, `venv`, or `python-runtime/`, and Electron will require that bundled Python unless `FORMIC_PYTHON` is explicitly supplied.
 - In a packaged app, Electron will also look for that server root at `process.resourcesPath/formic-server`.
 - Desktop launches set `FORMIC_DESKTOP=true` and default `FORMIC_LAZY_EMBEDDINGS=true`, deferring local embedding model initialization until first retrieval use.
 - Electron shows a startup screen immediately, waits for FastAPI health, then waits for the renderer URL before loading the app.
 - Backend failure screens include the selected launch plan and recent sidecar output.
-- Bundle-specific failures now catch missing backend entry files, missing lock/context files, or missing `.venv` before launching a process.
-- The next Phase 0 decision is the packaging recipe for bundled Python/venv. Docker/server connection mode should stay as the fallback unless the bundled rehearsal proves too brittle.
+- Bundle-specific failures now catch missing backend entry files, missing lock/context files, or missing bundled Python before launching a process.
+- The next Phase 0 decision is the production signing recipe for bundled managed Python. Docker/server connection mode should stay as the fallback unless the bundled rehearsal proves too brittle.
 
 ## Results
 
@@ -130,11 +153,13 @@ Current result: Electron reports `FORMIC_SERVER_BUNDLE_DIR managed Python runtim
 - `npm run desktop:bundle:audit` now reports the copied `.venv` as a local rehearsal artifact, not a shippable Python payload: Python resolves outside the bundle, console scripts contain absolute build-path shebangs, and hundreds of native libraries remain to be signed.
 - `npm run desktop:bundle:relocation-smoke -- --clean` now proves launcher path handling from a copied bundle path with spaces.
 - `npm run desktop:bundle:managed-smoke -- --clean` now proves Electron can launch the API sidecar from an in-bundle managed `python-runtime/` with no `.venv` or user-home Python symlink.
+- `npm run desktop:resources:managed-smoke` now proves the managed `python-runtime/` sidecar works from `Formic.app/Contents/Resources/formic-server` with no `FORMIC_SERVER_BUNDLE_DIR`.
+- `npm run desktop:resources:managed-adhoc-sign-check` now proves the managed packaged resources layout can be recursively ad-hoc signed and verified locally; this does not replace Developer ID signing or notarization.
 
 ## Current Packaging Read
 
-Recommended path: keep pursuing a bundled Python sidecar as the Phase 0 default because the current app shape already needs a local FastAPI process for desktop parity. Keep the `formic-server` layout and Electron launcher, and use the managed `python-runtime/` payload as the primary artifact strategy instead of a raw copied uv-created `.venv`.
+Recommended path: keep pursuing a bundled Python sidecar as the Phase 0 default because the current app shape already needs a local FastAPI process for desktop parity. Keep the `formic-server` layout and Electron launcher, and use the managed `python-runtime/` payload as the primary artifact strategy instead of a raw copied uv-created `.venv`. The copied `.venv` can be retired from the primary packaging path and kept only as a comparison/regression rehearsal.
 
 Fallback path: keep `FORMIC_SERVER_MODE=external` for Docker or a user-managed server. Do not make this the primary desktop story unless the bundled-venv rehearsal fails on clean machines.
 
-Remaining blocker for a real packaged `.app`: package the managed `python-runtime/` payload under `Contents/Resources/formic-server`, then run recursive local signing verification before attempting Developer ID signing/notarization. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough.
+Remaining blocker for a real packaged `.app`: replace the local ad-hoc `codesign --deep` proof with a production Developer ID signing plan for the Electron app, Python runtime, and every native `.so`/`.dylib`, then prepare hardened runtime, entitlements, notarization, and stapling checks. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough.

@@ -6,7 +6,7 @@ It starts the Vite/Svelte renderer on `http://127.0.0.1:5173` with a strict port
 
 Local dev routes generated backend static files to an untracked temp/user-data directory so starting the backend does not rewrite tracked assets under `backend/open_webui/static`.
 
-The Phase 0 packaging direction is still bundled server first: Electron now looks for a future packaged server root at `process.resourcesPath/formic-server`, or an explicit `FORMIC_SERVER_BUNDLE_DIR`, and requires a `.venv`/`venv` Python in that root. The repo-local path still uses `uv run --frozen --project .` when no bundle root is selected. External/Docker server mode remains the fallback path while bundled packaging is hardened.
+The Phase 0 packaging direction is still bundled server first: Electron now looks for a future packaged server root at `process.resourcesPath/formic-server`, or an explicit `FORMIC_SERVER_BUNDLE_DIR`, and requires a bundled `.venv`/`venv` Python or managed `python-runtime/` in that root. The repo-local path still uses `uv run --frozen --project .` when no bundle root is selected. External/Docker server mode remains the fallback path while bundled packaging is hardened.
 
 Useful environment overrides:
 
@@ -66,7 +66,7 @@ Failure states are visible in the Electron window:
 
 Backend failures include the selected sidecar launch plan and recent server output so packaging and local environment failures can be diagnosed from the shell.
 
-When `FORMIC_SERVER_BUNDLE_DIR` or the packaged `resources/formic-server` path is selected, Electron now treats the bundle as a real packaged-server root. It requires `backend/open_webui/main.py`, `backend/open_webui/env.py`, `pyproject.toml`, `uv.lock`, `package.json`, `CHANGELOG.md`, and a bundled `.venv` or `venv` Python. Missing files fail before launch with a clear bundle-specific message. The repo-local dev path still uses `uv run --frozen --project .` when no bundle root is selected.
+When `FORMIC_SERVER_BUNDLE_DIR` or the packaged `resources/formic-server` path is selected, Electron now treats the bundle as a real packaged-server root. It requires `backend/open_webui/main.py`, `backend/open_webui/env.py`, `pyproject.toml`, `uv.lock`, `package.json`, `CHANGELOG.md`, and a bundled `.venv`, `venv`, or `python-runtime/` Python. Missing files fail before launch with a clear bundle-specific message. The repo-local dev path still uses `uv run --frozen --project .` when no bundle root is selected.
 
 `npm run dev:renderer` remains the standalone web renderer loop. It uses the same strict `127.0.0.1:5173` target so Electron and browser-based web development exercise the same renderer endpoint.
 
@@ -101,6 +101,32 @@ Useful overrides:
 - `FORMIC_REHEARSAL_TIMEOUT_MS=240000`
 
 The electron-builder config for this rehearsal is `electron-builder.desktop.cjs`. It keeps the Electron app code in `app.asar`, but stages Python, backend files, lock/context files, and `.venv/` as explicit `extraResources` under `resources/formic-server`, where the sidecar launcher can execute them directly.
+
+The managed packaged-resources proof uses the same unsigned `.app` layout, but packages `python-runtime/` instead of the copied uv `.venv`:
+
+```sh
+npm run desktop:resources:managed-smoke
+```
+
+The command builds a managed `build/desktop-rehearsal/formic-server`, packages it to `build/desktop-rehearsal/packaged-app/mac-arm64/Formic.app/Contents/Resources/formic-server`, deletes `FORMIC_SERVER_BUNDLE_DIR` from the launched app environment, verifies Electron reports `bundled managed Python runtime`, audits the packaged resources server, and probes `/health`, `/ready`, and `/api/version`.
+
+To create the managed packaged layout without launching it:
+
+```sh
+npm run desktop:resources:managed-package
+```
+
+The primary Phase 0 packaging path should now use this managed resources rehearsal rather than the copied `.venv` rehearsal. The `.venv` resources command remains useful as a regression comparison, but its audit findings mean it should not be the shippable Python artifact.
+
+## Local Signing Check
+
+A local-only recursive ad-hoc signing check is available for the managed packaged resources layout:
+
+```sh
+npm run desktop:resources:managed-adhoc-sign-check
+```
+
+This command packages the managed runtime under `Contents/Resources/formic-server`, audits the packaged Python artifact, runs `codesign --force --deep --sign -` on the local `.app`, and verifies it with `codesign --verify --deep --strict`. It is only a local packaging sanity check. It is not Developer ID signing, does not notarize the app, and does not prove Gatekeeper acceptance.
 
 ## Python Artifact Audit
 
@@ -145,7 +171,7 @@ The managed-runtime rehearsal:
 - removes `.venv`/`venv` so Electron must launch `python-runtime/bin/python3.11`.
 - audits the runtime and verifies `/health`, `/ready`, and `/api/version`.
 
-Current result on macOS arm64: Electron launches `FORMIC_SERVER_BUNDLE_DIR managed Python runtime`, and `python-runtime/bin/python3.11` resolves inside `formic-server`. This proves the sidecar no longer depends on a user-home uv Python symlink. The remaining risks are size, hundreds of native `.so`/`.dylib` files that need recursive signing, and generated console scripts with absolute shebangs. Electron does not use those console scripts for the sidecar path because it launches `python -m uvicorn` directly.
+Current result on macOS arm64: Electron launches both `FORMIC_SERVER_BUNDLE_DIR managed Python runtime` from the loose bundle and `bundled managed Python runtime` from the packaged `.app` resources path. In both cases `python-runtime/bin/python3.11` resolves inside `formic-server`. This proves the sidecar no longer depends on a user-home uv Python symlink. The remaining risks are size, hundreds of native `.so`/`.dylib` files that need recursive signing, and generated console scripts with absolute shebangs. Electron does not use those console scripts for the sidecar path because it launches `python -m uvicorn` directly.
 
 ## Current Reliability Notes
 
@@ -161,14 +187,15 @@ Works:
 - `npm run desktop:bundle:audit` makes `.venv` relocation/signing risks visible without mutating the rehearsal output.
 - `npm run desktop:bundle:relocation-smoke -- --clean` verifies Electron can launch the sidecar from a copied bundle path with spaces.
 - `npm run desktop:bundle:managed-smoke -- --clean` proves a self-contained `python-runtime/` server artifact can launch the FastAPI sidecar without a `.venv` or user-home Python symlink.
+- `npm run desktop:resources:managed-smoke` proves the same managed artifact works from `Formic.app/Contents/Resources/formic-server` with no `FORMIC_SERVER_BUNDLE_DIR`.
+- `npm run desktop:resources:managed-adhoc-sign-check` proves this local unsigned rehearsal layout can be ad-hoc signed and verified with recursive `codesign --deep`; this does not change the Developer ID/notarization requirement.
 
 Still flaky:
 
 - First-run local backend startup can still be slow when dependency/model caches are cold.
-- The packaged resources rehearsal uses the current machine's uv-created `.venv`; it relocated successfully into the local `.app` resources path and a second path with spaces on this machine, but the audit shows the Python executable is still an absolute symlink to the local uv-managed runtime outside the bundle.
-- The managed-runtime rehearsal is self-contained at the `formic-server` directory level, but the unsigned packaged `.app` rehearsal still uses the older `.venv` build path until a managed resources smoke is added.
+- The copied `.venv` packaged resources rehearsal uses the current machine's uv-created `.venv`; it relocated successfully into the local `.app` resources path and a second path with spaces on this machine, but the audit shows the Python executable is still an absolute symlink to the local uv-managed runtime outside the bundle.
 - The smoke command verifies the API sidecar path with an `about:blank` renderer URL. It does not prove the full packaged renderer, installer, updater, signing, or notarization path.
 - electron-builder warns that arm64 macOS normally requires signing; this rehearsal intentionally skips signing with `identity: null`.
-- Packaged builds still need signing, notarization, and a final decision on whether the Docker/external fallback becomes user-facing.
+- The local ad-hoc signing check proves the current filesystem layout is signable on this machine, but packaged builds still need a real recursive Developer ID signing recipe, hardened runtime/entitlements decisions, notarization, stapling, and a final decision on whether the Docker/external fallback becomes user-facing.
 
-Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, and continue with the managed `python-runtime/` artifact as the primary path. The next proof should package that managed runtime under `Contents/Resources/formic-server`, then run local recursive signing verification before Developer ID signing/notarization. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.
+Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, and use the managed `python-runtime/` artifact as the primary path. The copied uv `.venv` can be retired from the primary packaging path and kept only as a comparison/regression rehearsal. The next proof should replace the local ad-hoc `codesign --deep` check with an explicit Developer ID signing plan for every Mach-O/native payload, including hardened runtime and notarization dry-run preparation. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.
