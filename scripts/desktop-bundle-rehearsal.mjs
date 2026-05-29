@@ -12,6 +12,7 @@ const defaultBundleDir = path.join(defaultRehearsalRoot, 'formic-server');
 const defaultPackageDir = path.join(defaultRehearsalRoot, 'packaged-app');
 const defaultRelocationDir = path.join(defaultRehearsalRoot, 'relocation path with spaces');
 const defaultRuntimeDir = path.join(defaultRehearsalRoot, 'runtime-data');
+const defaultNotarizationDir = path.join(defaultRehearsalRoot, 'notarization');
 const defaultPort = 18080;
 const defaultTimeoutMs = 180000;
 const managedPythonRequest = '3.11';
@@ -110,6 +111,7 @@ function parseArgs(argv) {
       'resources-managed-adhoc-sign-check',
       'resources-managed-signing-preflight',
       'resources-managed-developer-id-sign-check',
+      'resources-managed-notarization-check',
       'audit',
       'relocation-smoke',
       'managed-build',
@@ -1163,12 +1165,12 @@ async function runSpctlDiagnostic(appDir) {
   console.log('[formic-rehearsal] spctl is diagnostic only before notarization; this checkpoint does not require Gatekeeper acceptance.');
 }
 
-async function developerIdSignCheck(options) {
+async function signManagedDeveloperIdApp(options, { runPreflight = true } = {}) {
   if (process.platform !== 'darwin') {
     throw new Error('The Developer ID signing check currently expects macOS codesign.');
   }
 
-  const preflight = await managedSigningPreflight(options);
+  const preflight = runPreflight ? await managedSigningPreflight(options) : null;
   const identity = developerIdIdentityFromEnv();
   await assertDeveloperIdIdentity(identity);
 
@@ -1192,6 +1194,12 @@ async function developerIdSignCheck(options) {
 
   await signPathWithDeveloperId(packagedApp.appDir, identity, mainEntitlementsPath);
   await run('codesign', ['--verify', '--deep', '--strict', '--verbose=4', packagedApp.appDir]);
+
+  return { packagedApp, preflight, machOFiles };
+}
+
+async function developerIdSignCheck(options) {
+  const { packagedApp, preflight } = await signManagedDeveloperIdApp(options);
   await runSpctlDiagnostic(packagedApp.appDir);
 
   await smokePackagedApp(packagedApp, options, {
@@ -1201,6 +1209,206 @@ async function developerIdSignCheck(options) {
   console.log('[formic-rehearsal] Developer ID signing check passed; notarization was not attempted.');
 
   return preflight;
+}
+
+function notarizationCredentialArgsFromEnv() {
+  const appleId = process.env.APPLE_ID || '';
+  const appSpecificPassword = process.env.APPLE_APP_SPECIFIC_PASSWORD || '';
+  const appleTeamId = process.env.APPLE_TEAM_ID || '';
+  const appleIdValues = [
+    ['APPLE_ID', appleId],
+    ['APPLE_APP_SPECIFIC_PASSWORD', appSpecificPassword],
+    ['APPLE_TEAM_ID', appleTeamId]
+  ];
+  const appleIdPresent = appleIdValues.filter(([, value]) => Boolean(value));
+
+  if (appleIdPresent.length === appleIdValues.length) {
+    return {
+      mode: 'Apple ID + app-specific password',
+      args: ['--apple-id', appleId, '--password', appSpecificPassword, '--team-id', appleTeamId]
+    };
+  }
+
+  const apiKey = process.env.APPLE_API_KEY || process.env.APP_STORE_CONNECT_API_KEY || process.env.ASC_API_KEY || '';
+  const apiKeyId =
+    process.env.APPLE_API_KEY_ID || process.env.APP_STORE_CONNECT_API_KEY_ID || process.env.ASC_KEY_ID || '';
+  const apiIssuer =
+    process.env.APPLE_API_ISSUER ||
+    process.env.APP_STORE_CONNECT_API_ISSUER ||
+    process.env.APP_STORE_CONNECT_ISSUER_ID ||
+    process.env.ASC_ISSUER_ID ||
+    '';
+  const apiValues = [
+    ['APPLE_API_KEY', apiKey],
+    ['APPLE_API_KEY_ID', apiKeyId],
+    ['APPLE_API_ISSUER', apiIssuer]
+  ];
+  const apiPresent = apiValues.filter(([, value]) => Boolean(value));
+
+  if (apiPresent.length === apiValues.length) {
+    return {
+      mode: 'App Store Connect API key',
+      args: ['--key', apiKey, '--key-id', apiKeyId, '--issuer', apiIssuer]
+    };
+  }
+
+  if (appleIdPresent.length > 0 || apiPresent.length > 0) {
+    const missingAppleId = appleIdValues.filter(([, value]) => !value).map(([name]) => name);
+    const missingApi = apiValues.filter(([, value]) => !value).map(([name]) => name);
+    throw new Error(
+      [
+        'Notarization credentials are incomplete.',
+        appleIdPresent.length > 0 ? `Missing Apple ID variable(s): ${missingAppleId.join(', ')}` : null,
+        apiPresent.length > 0 ? `Missing App Store Connect API key variable(s): ${missingApi.join(', ')}` : null,
+        'Provide either the complete Apple ID set or the complete App Store Connect API key set.'
+      ]
+        .filter(Boolean)
+        .join('\n')
+    );
+  }
+
+  return null;
+}
+
+function assertNotarizationCredentials() {
+  const credentials = notarizationCredentialArgsFromEnv();
+  if (credentials) {
+    return credentials;
+  }
+
+  throw new Error(
+    [
+      'Notarization requires Apple notary credentials; none were found.',
+      'Use Apple ID credentials:',
+      '  FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" \\',
+      '  APPLE_ID="developer@example.com" \\',
+      '  APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \\',
+      '  APPLE_TEAM_ID="TEAMID1234" \\',
+      '  npm run desktop:resources:managed-notarization-check',
+      'Or use an App Store Connect API key file:',
+      '  FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" \\',
+      '  APPLE_API_KEY="/path/to/AuthKey_ABC123DEFG.p8" \\',
+      '  APPLE_API_KEY_ID="ABC123DEFG" \\',
+      '  APPLE_API_ISSUER="00000000-0000-0000-0000-000000000000" \\',
+      '  npm run desktop:resources:managed-notarization-check',
+      'The signing preflight and Developer ID signing-only commands do not require these notarization variables.'
+    ].join('\n')
+  );
+}
+
+async function assertXcrunTool(toolName) {
+  const result = await runResult('xcrun', ['--find', toolName]);
+  if (result.code !== 0) {
+    throw new Error(
+      [
+        `xcrun could not find ${toolName}.`,
+        'Install Xcode command line tools or select a full Xcode with:',
+        '  sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer',
+        result.output.trim()
+      ]
+        .filter(Boolean)
+        .join('\n')
+    );
+  }
+}
+
+async function prepareNotarizationZip(appDir) {
+  const zipPath = path.join(defaultNotarizationDir, `${path.basename(appDir, '.app')}-notarization.zip`);
+  await rm(defaultNotarizationDir, { recursive: true, force: true });
+  await mkdir(defaultNotarizationDir, { recursive: true });
+  await run('ditto', ['-c', '-k', '--keepParent', path.basename(appDir), zipPath], {
+    cwd: path.dirname(appDir)
+  });
+  console.log(`[formic-rehearsal] Notarization artifact ready: ${displayPath(zipPath)}`);
+  return zipPath;
+}
+
+async function submitForNotarization(zipPath, credentials) {
+  console.log(`[formic-rehearsal] Submitting notarization artifact with ${credentials.mode}.`);
+  const result = await runResult('xcrun', [
+    'notarytool',
+    'submit',
+    zipPath,
+    ...credentials.args,
+    '--wait',
+    '--output-format',
+    'json'
+  ]);
+
+  const output = result.output.trim();
+  let parsed = null;
+  if (output) {
+    try {
+      parsed = JSON.parse(output);
+    } catch {
+      // Keep the raw output below when notarytool does not return JSON.
+    }
+  }
+
+  if (result.code !== 0) {
+    throw new Error(`notarytool submit failed.\n${output || '(no output)'}`);
+  }
+
+  if (!parsed) {
+    throw new Error(`notarytool submit did not return JSON output.\n${output || '(no output)'}`);
+  }
+
+  console.log(`[formic-rehearsal] Notarization id: ${parsed.id ?? '(unknown)'}`);
+  console.log(`[formic-rehearsal] Notarization status: ${parsed.status ?? '(unknown)'}`);
+
+  if (parsed.status !== 'Accepted') {
+    throw new Error(
+      [
+        `Notarization was not accepted: ${parsed.status ?? '(unknown status)'}.`,
+        parsed.id ? `Inspect the log with: xcrun notarytool log ${parsed.id} <credentials>` : null,
+        output
+      ]
+        .filter(Boolean)
+        .join('\n')
+    );
+  }
+
+  return parsed;
+}
+
+async function stapleAndValidate(appDir) {
+  await run('xcrun', ['stapler', 'staple', '-v', appDir]);
+  await run('xcrun', ['stapler', 'validate', '-v', appDir]);
+  console.log(`[formic-rehearsal] Stapling validation passed: ${displayPath(appDir)}`);
+}
+
+async function assertSpctlAccepted(appDir) {
+  const result = await runResult('spctl', ['--assess', '--type', 'execute', '--verbose=4', appDir]);
+  const output = result.output.trim();
+  console.log(`[formic-rehearsal] spctl stapled-app exit code: ${result.code ?? 'null'}`);
+  if (output) {
+    console.log(output);
+  }
+
+  if (result.code !== 0) {
+    throw new Error('spctl did not accept the stapled app.');
+  }
+}
+
+async function notarizationCheck(options) {
+  if (process.platform !== 'darwin') {
+    throw new Error('The notarization check currently expects macOS notarytool/stapler/spctl tooling.');
+  }
+
+  const credentials = assertNotarizationCredentials();
+  await assertXcrunTool('notarytool');
+  await assertXcrunTool('stapler');
+
+  const { packagedApp } = await signManagedDeveloperIdApp(options);
+  const zipPath = await prepareNotarizationZip(packagedApp.appDir);
+  await submitForNotarization(zipPath, credentials);
+  await stapleAndValidate(packagedApp.appDir);
+  await assertSpctlAccepted(packagedApp.appDir);
+  await smokePackagedApp(packagedApp, options, {
+    managed: true,
+    runtimeName: 'resources-managed-notarization-smoke'
+  });
+  console.log('[formic-rehearsal] Notarization/stapling check passed.');
 }
 
 async function smokeBundle(
@@ -1381,6 +1589,11 @@ async function runCommand(options) {
 
   if (options.command === 'resources-managed-developer-id-sign-check') {
     await developerIdSignCheck(options);
+    return;
+  }
+
+  if (options.command === 'resources-managed-notarization-check') {
+    await notarizationCheck(options);
     return;
   }
 

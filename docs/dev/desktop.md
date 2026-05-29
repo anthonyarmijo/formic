@@ -150,6 +150,32 @@ The Python sidecar contains many data files, archives, and test fixtures. Those 
 
 If no Developer ID identity is configured, the Developer ID command intentionally runs the preflight and then fails with setup instructions. It never falls back to ad-hoc signing. This checkpoint still does not notarize, staple, create a DMG, or prove Gatekeeper acceptance.
 
+## Notarization and Stapling Rehearsal
+
+The managed notarization dry run starts from the same Developer ID signed `.app`, then submits a zipped `.app` artifact to Apple's notary service:
+
+```sh
+FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" \
+APPLE_ID="developer@example.com" \
+APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
+APPLE_TEAM_ID="TEAMID1234" \
+npm run desktop:resources:managed-notarization-check
+```
+
+App Store Connect API key credentials are also accepted:
+
+```sh
+FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" \
+APPLE_API_KEY="/path/to/AuthKey_ABC123DEFG.p8" \
+APPLE_API_KEY_ID="ABC123DEFG" \
+APPLE_API_ISSUER="00000000-0000-0000-0000-000000000000" \
+npm run desktop:resources:managed-notarization-check
+```
+
+The command keeps all output under `build/desktop-rehearsal`. electron-builder notarization is explicitly disabled for this rehearsal so the script owns the notarization sequence. It packages the managed `.app`, signs it with Developer ID and hardened runtime, verifies `codesign --verify --deep --strict --verbose=4`, creates `build/desktop-rehearsal/notarization/Formic-notarization.zip` with `ditto --keepParent`, runs `xcrun notarytool submit --wait`, staples the accepted ticket to the `.app`, validates the staple, requires `spctl --assess --type execute --verbose=4` to pass, and launches the stapled app with no `FORMIC_SERVER_BUNDLE_DIR` while probing `/health`, `/ready`, and `/api/version`.
+
+If notarization credentials are missing or incomplete, the command fails before packaging with setup instructions. The preflight and Developer ID signing-only commands do not read or require notarization credentials.
+
 ## Python Artifact Audit
 
 The signed-app Python decision is now captured by a repeatable, non-destructive audit against the existing rehearsal bundle:
@@ -213,6 +239,7 @@ Works:
 - `npm run desktop:resources:managed-adhoc-sign-check` proves this local unsigned rehearsal layout can be ad-hoc signed and verified with recursive `codesign --deep`; this does not change the Developer ID/notarization requirement.
 - `npm run desktop:resources:managed-signing-preflight` inventories the managed packaged app's Python Mach-O payload and intended signing order without Apple credentials.
 - `npm run desktop:resources:managed-developer-id-sign-check` is the credential-gated hardened-runtime signing dry run; it still does not notarize or staple.
+- `npm run desktop:resources:managed-notarization-check` is the credential-gated notarization/stapling dry run for the signed managed `.app`.
 
 Still flaky:
 
@@ -220,6 +247,6 @@ Still flaky:
 - The copied `.venv` packaged resources rehearsal uses the current machine's uv-created `.venv`; it relocated successfully into the local `.app` resources path and a second path with spaces on this machine, but the audit shows the Python executable is still an absolute symlink to the local uv-managed runtime outside the bundle.
 - The smoke command verifies the API sidecar path with an `about:blank` renderer URL. It does not prove the full packaged renderer, installer, updater, signing, or notarization path.
 - electron-builder warns that arm64 macOS normally requires signing; this rehearsal intentionally skips signing with `identity: null`.
-- The local ad-hoc signing check proves the current filesystem layout is signable on this machine, while the Developer ID rehearsal is the first real hardened-runtime signing gate. Packaged builds still need notarization, stapling, Gatekeeper verification after notarization, and a final decision on whether the Docker/external fallback becomes user-facing.
+- The local ad-hoc signing check proves the current filesystem layout is signable on this machine, while the Developer ID rehearsal is the first real hardened-runtime signing gate. The notarization rehearsal now covers zip submission, stapling, post-staple Gatekeeper assessment, and a managed sidecar smoke from the stapled `.app`; installer shape and final distribution polish are still separate.
 
-Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, and use the managed `python-runtime/` artifact as the primary path. The copied uv `.venv` can be retired from the primary packaging path and kept only as a comparison/regression rehearsal. The next proof after Developer ID signing should upload the signed artifact to Apple's notary service, inspect the notary log, staple the ticket, and repeat Gatekeeper assessment. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.
+Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, and use the managed `python-runtime/` artifact as the primary path. The copied uv `.venv` can be retired from the primary packaging path and kept only as a comparison/regression rehearsal. The next blocker before DMG/pkg/installer work is deciding the distributable container shape and whether the managed-runtime payload needs pruning before installer compression. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.

@@ -43,6 +43,7 @@ module.exports = {
     entitlements: useDeveloperIdSigning ? 'apps/desktop/signing/entitlements.mac.plist' : undefined,
     entitlementsInherit: useDeveloperIdSigning ? 'apps/desktop/signing/entitlements.mac.inherit.plist' : undefined,
     signIgnore: useDeveloperIdSigning ? [pythonSidecarSignIgnore] : undefined,
+    notarize: false,
     gatekeeperAssess: false
   }
 };

@@ -147,6 +147,32 @@ Non-Mach-O Python sidecar resources such as compressed datasets and JSON fixture
 
 If no Developer ID Application identity is configured, the command runs preflight and fails with setup instructions. It does not fall back to ad-hoc signing and does not attempt notarization.
 
+## Notarization and Stapling Rehearsal
+
+The managed notarization dry run uses the signed managed `.app` as its input:
+
+```sh
+FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" \
+APPLE_ID="developer@example.com" \
+APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
+APPLE_TEAM_ID="TEAMID1234" \
+npm run desktop:resources:managed-notarization-check
+```
+
+It also accepts App Store Connect API key credentials:
+
+```sh
+FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" \
+APPLE_API_KEY="/path/to/AuthKey_ABC123DEFG.p8" \
+APPLE_API_KEY_ID="ABC123DEFG" \
+APPLE_API_ISSUER="00000000-0000-0000-0000-000000000000" \
+npm run desktop:resources:managed-notarization-check
+```
+
+The command keeps the rehearsal scoped to `build/desktop-rehearsal`. electron-builder notarization is explicitly disabled for this rehearsal so the script owns the notarization sequence: it packages the managed `.app`, signs with Developer ID and hardened runtime, verifies codesigning, creates `build/desktop-rehearsal/notarization/Formic-notarization.zip` with `ditto --keepParent`, submits with `xcrun notarytool submit --wait`, staples the accepted ticket, validates stapling, requires `spctl --assess --type execute --verbose=4` to pass, and launches the stapled app with no `FORMIC_SERVER_BUNDLE_DIR` while checking `/health`, `/ready`, and `/api/version`.
+
+If notarization credentials are missing or incomplete, the notarization command fails up front with setup instructions. The preflight and Developer ID signing-only commands remain free of notarization credential requirements.
+
 ## Decision Notes
 
 - The Electron shell can check for an already-running backend before spawning its own process.
@@ -179,6 +205,7 @@ If no Developer ID Application identity is configured, the command runs prefligh
 - `npm run desktop:resources:managed-adhoc-sign-check` now proves the managed packaged resources layout can be recursively ad-hoc signed and verified locally; this does not replace Developer ID signing or notarization.
 - `npm run desktop:resources:managed-signing-preflight` now inventories the managed packaged app's Python Mach-O payload and intended signing order without Apple credentials.
 - `npm run desktop:resources:managed-developer-id-sign-check` now provides the credential-gated Developer ID hardened-runtime signing dry run; it still does not notarize or staple.
+- `npm run desktop:resources:managed-notarization-check` now provides the credential-gated notarization/stapling dry run for the Developer ID signed managed `.app`.
 
 ## Current Packaging Read
 
@@ -186,4 +213,4 @@ Recommended path: keep pursuing a bundled Python sidecar as the Phase 0 default 
 
 Fallback path: keep `FORMIC_SERVER_MODE=external` for Docker or a user-managed server. Do not make this the primary desktop story unless the bundled-venv rehearsal fails on clean machines.
 
-Remaining blocker for a distributable packaged `.app`: run the Developer ID dry run with real credentials, then upload the signed artifact to Apple's notary service, inspect the notary log, staple the ticket, and repeat Gatekeeper assessment. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough.
+Remaining blocker before distributable installer work: choose the final DMG/pkg/container shape and decide whether the managed-runtime payload needs pruning before installer compression. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough.
