@@ -1145,9 +1145,70 @@ app.state.rf = None
 app.state.YOUTUBE_LOADER_TRANSLATION = None
 
 
+FORMIC_DESKTOP = os.getenv('FORMIC_DESKTOP', 'false').lower() == 'true'
+FORMIC_LAZY_EMBEDDINGS = os.getenv('FORMIC_LAZY_EMBEDDINGS', str(FORMIC_DESKTOP)).lower() == 'true'
+lazy_local_embeddings = FORMIC_LAZY_EMBEDDINGS and app.state.config.RAG_EMBEDDING_ENGINE == ''
+
+
+def build_embedding_function(embedding_function):
+    return get_embedding_function(
+        app.state.config.RAG_EMBEDDING_ENGINE,
+        app.state.config.RAG_EMBEDDING_MODEL,
+        embedding_function=embedding_function,
+        url=(
+            app.state.config.RAG_OPENAI_API_BASE_URL
+            if app.state.config.RAG_EMBEDDING_ENGINE == 'openai'
+            else (
+                app.state.config.RAG_OLLAMA_BASE_URL
+                if app.state.config.RAG_EMBEDDING_ENGINE == 'ollama'
+                else app.state.config.RAG_AZURE_OPENAI_BASE_URL
+            )
+        ),
+        key=(
+            app.state.config.RAG_OPENAI_API_KEY
+            if app.state.config.RAG_EMBEDDING_ENGINE == 'openai'
+            else (
+                app.state.config.RAG_OLLAMA_API_KEY
+                if app.state.config.RAG_EMBEDDING_ENGINE == 'ollama'
+                else app.state.config.RAG_AZURE_OPENAI_API_KEY
+            )
+        ),
+        embedding_batch_size=app.state.config.RAG_EMBEDDING_BATCH_SIZE,
+        azure_api_version=(
+            app.state.config.RAG_AZURE_OPENAI_API_VERSION
+            if app.state.config.RAG_EMBEDDING_ENGINE == 'azure_openai'
+            else None
+        ),
+        enable_async=app.state.config.ENABLE_ASYNC_EMBEDDING,
+        concurrent_requests=app.state.config.RAG_EMBEDDING_CONCURRENT_REQUESTS,
+    )
+
+
+async def lazy_embedding_function(query, prefix=None, user=None):
+    if app.state.ef is None:
+        app.state.ef = await asyncio.to_thread(
+            get_ef,
+            app.state.config.RAG_EMBEDDING_ENGINE,
+            app.state.config.RAG_EMBEDDING_MODEL,
+        )
+        if app.state.ef is None:
+            raise RuntimeError('Embedding model is not available for local retrieval.')
+        app.state.EMBEDDING_FUNCTION = build_embedding_function(app.state.ef)
+
+    return await app.state.EMBEDDING_FUNCTION(query, prefix=prefix, user=user)
+
+
 try:
-    app.state.ef = get_ef(app.state.config.RAG_EMBEDDING_ENGINE, app.state.config.RAG_EMBEDDING_MODEL)
-    if app.state.config.ENABLE_RAG_HYBRID_SEARCH and not app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL:
+    if lazy_local_embeddings:
+        log.info('Deferring local embedding model initialization for Formic desktop startup.')
+    else:
+        app.state.ef = get_ef(app.state.config.RAG_EMBEDDING_ENGINE, app.state.config.RAG_EMBEDDING_MODEL)
+
+    if (
+        app.state.config.ENABLE_RAG_HYBRID_SEARCH
+        and not app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL
+        and not lazy_local_embeddings
+    ):
         app.state.rf = get_rf(
             app.state.config.RAG_RERANKING_ENGINE,
             app.state.config.RAG_RERANKING_MODEL,
@@ -1162,36 +1223,8 @@ except Exception as e:
     pass
 
 
-app.state.EMBEDDING_FUNCTION = get_embedding_function(
-    app.state.config.RAG_EMBEDDING_ENGINE,
-    app.state.config.RAG_EMBEDDING_MODEL,
-    embedding_function=app.state.ef,
-    url=(
-        app.state.config.RAG_OPENAI_API_BASE_URL
-        if app.state.config.RAG_EMBEDDING_ENGINE == 'openai'
-        else (
-            app.state.config.RAG_OLLAMA_BASE_URL
-            if app.state.config.RAG_EMBEDDING_ENGINE == 'ollama'
-            else app.state.config.RAG_AZURE_OPENAI_BASE_URL
-        )
-    ),
-    key=(
-        app.state.config.RAG_OPENAI_API_KEY
-        if app.state.config.RAG_EMBEDDING_ENGINE == 'openai'
-        else (
-            app.state.config.RAG_OLLAMA_API_KEY
-            if app.state.config.RAG_EMBEDDING_ENGINE == 'ollama'
-            else app.state.config.RAG_AZURE_OPENAI_API_KEY
-        )
-    ),
-    embedding_batch_size=app.state.config.RAG_EMBEDDING_BATCH_SIZE,
-    azure_api_version=(
-        app.state.config.RAG_AZURE_OPENAI_API_VERSION
-        if app.state.config.RAG_EMBEDDING_ENGINE == 'azure_openai'
-        else None
-    ),
-    enable_async=app.state.config.ENABLE_ASYNC_EMBEDDING,
-    concurrent_requests=app.state.config.RAG_EMBEDDING_CONCURRENT_REQUESTS,
+app.state.EMBEDDING_FUNCTION = (
+    lazy_embedding_function if lazy_local_embeddings else build_embedding_function(app.state.ef)
 )
 
 app.state.RERANKING_FUNCTION = get_reranking_function(
