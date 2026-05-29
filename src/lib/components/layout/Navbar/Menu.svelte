@@ -465,7 +465,7 @@
 										<Folder strokeWidth="1.5" />
 									</div>
 
-									<div class="truncate">{folder.name ?? 'Folder'}</div>
+									<div class="truncate">{folder.name ?? 'Group'}</div>
 								</button>
 							{/if}
 						{/each}

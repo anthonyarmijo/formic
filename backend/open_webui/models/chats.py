@@ -180,6 +180,17 @@ class ChatTitleIdResponse(BaseModel):
     last_read_at: int | None = None
 
 
+class ChatInboxItemResponse(BaseModel):
+    id: str
+    title: str
+    updated_at: int
+    created_at: int
+    last_read_at: int | None = None
+    folder_id: str | None = None
+    folder_name: str | None = None
+    preview: str | None = None
+
+
 class SharedChatResponse(BaseModel):
     id: str
     title: str
@@ -416,6 +427,63 @@ class ChatTable:
                 return False
         except Exception:
             return False
+
+    async def get_unread_chats_by_user_id(
+        self,
+        user_id: str,
+        limit: int = 100,
+        db: AsyncSession | None = None,
+    ) -> list[ChatInboxItemResponse]:
+        async with get_async_db_context(db) as session:
+            stmt = (
+                select(
+                    Chat.id,
+                    Chat.title,
+                    Chat.updated_at,
+                    Chat.created_at,
+                    Chat.last_read_at,
+                    Chat.folder_id,
+                    Chat.chat,
+                )
+                .filter_by(user_id=user_id, archived=False)
+                .where(or_(Chat.last_read_at.is_(None), Chat.updated_at > Chat.last_read_at))
+                .order_by(Chat.updated_at.desc(), Chat.id)
+                .limit(limit)
+            )
+
+            result = await session.execute(stmt)
+            chats = result.all()
+
+            items = []
+            for chat in chats:
+                preview = None
+                chat_payload = chat[6] or {}
+                try:
+                    history = chat_payload.get('history') or {}
+                    messages = history.get('messages') or {}
+                    current_id = history.get('currentId')
+                    message = messages.get(current_id) if current_id else None
+                    content = message.get('content') if isinstance(message, dict) else None
+                    if isinstance(content, str):
+                        preview = ' '.join(content.split())[:180]
+                except Exception:
+                    preview = None
+
+                items.append(
+                    ChatInboxItemResponse.model_validate(
+                        {
+                            'id': chat[0],
+                            'title': chat[1],
+                            'updated_at': chat[2],
+                            'created_at': chat[3],
+                            'last_read_at': chat[4],
+                            'folder_id': chat[5],
+                            'preview': preview,
+                        }
+                    )
+                )
+
+            return items
 
     async def update_chat_title_by_id(self, id: str, title: str) -> ChatModel | None:
         try:

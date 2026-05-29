@@ -424,7 +424,7 @@
 								<Folder />
 							</div>
 
-							<div class="truncate">{folder?.name ?? 'Folder'}</div>
+							<div class="truncate">{folder?.name ?? 'Group'}</div>
 						</button>
 					{/each}
 				</DropdownSub>

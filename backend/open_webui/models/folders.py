@@ -56,6 +56,7 @@ class FolderNameIdResponse(BaseModel):
     id: str
     name: str
     meta: Optional[FolderMetadataResponse] = None
+    data: Optional[dict] = None
     parent_id: Optional[str] = None
     is_expanded: bool = False
     created_at: int

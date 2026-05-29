@@ -13,7 +13,7 @@
 	import Textarea from '$lib/components/common/Textarea.svelte';
 	import Knowledge from '$lib/components/workspace/Models/Knowledge.svelte';
 	import { getFolderById } from '$lib/apis/folders';
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 
 	export let show = false;
 	export let onSubmit: Function = (e) => {};
@@ -21,6 +21,7 @@
 	export let folderId = null;
 	export let parentId = null;
 	export let edit = false;
+	export let defaultWorkspace = 'personal';
 
 	let folder = null;
 	let name = '';
@@ -29,7 +30,11 @@
 	};
 	let data = {
 		system_prompt: '',
-		files: []
+		files: [],
+		group_type: 'topic',
+		project_path: '',
+		tags: [],
+		workspace: 'personal'
 	};
 
 	let loading = false;
@@ -47,7 +52,7 @@
 		const maxFileCount = $config?.features?.folder_max_file_count ?? '';
 		if (maxFileCount && (data?.files ?? []).length > maxFileCount) {
 			toast.error(
-				$i18n.t('Maximum number of files per folder is {{max}}.', { max: maxFileCount ?? 0 })
+				$i18n.t('Maximum number of files per group is {{max}}.', { max: maxFileCount ?? 0 })
 			);
 			loading = false;
 			return;
@@ -76,7 +81,16 @@
 			};
 			data = folder.data || {
 				system_prompt: '',
-				files: []
+				files: [],
+				group_type: 'topic',
+				project_path: '',
+				tags: [],
+				workspace: defaultWorkspace
+			};
+		} else if (!edit) {
+			data = {
+				...data,
+				workspace: defaultWorkspace
 			};
 		}
 
@@ -96,16 +110,20 @@
 		init();
 	}
 
-	$: if (!show && !edit) {
-		name = '';
-		meta = {
-			background_image_url: null
-		};
-		data = {
-			system_prompt: '',
-			files: []
-		};
-	}
+		$: if (!show && !edit) {
+			name = '';
+			meta = {
+				background_image_url: null
+			};
+			data = {
+				system_prompt: '',
+				files: [],
+				group_type: 'topic',
+				project_path: '',
+				tags: [],
+				workspace: defaultWorkspace
+			};
+		}
 </script>
 
 <Modal size="md" bind:show>
@@ -113,9 +131,9 @@
 		<div class=" flex justify-between dark:text-gray-300 px-5 pt-4 pb-1">
 			<div class=" text-lg font-medium self-center">
 				{#if edit}
-					{$i18n.t('Edit Folder')}
+					{$i18n.t('Edit Group')}
 				{:else}
-					{$i18n.t('Create Folder')}
+					{$i18n.t('Create Group')}
 				{/if}
 			</div>
 			<button
@@ -137,7 +155,7 @@
 					}}
 				>
 					<div class="flex flex-col w-full mt-1">
-						<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Folder Name')}</div>
+						<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Group Name')}</div>
 
 						<div class="flex-1">
 							<input
@@ -145,7 +163,7 @@
 								class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden"
 								type="text"
 								bind:value={name}
-								placeholder={$i18n.t('Enter folder name')}
+								placeholder={$i18n.t('Enter group name')}
 								autocomplete="off"
 							/>
 						</div>
@@ -183,7 +201,7 @@
 					/>
 
 					<div class="flex justify-between w-full mt-1 items-center">
-						<div class="text-xs text-gray-500">{$i18n.t('Folder Background Image')}</div>
+						<div class="text-xs text-gray-500">{$i18n.t('Group Background Image')}</div>
 
 						<div class="">
 							<button
@@ -228,7 +246,65 @@
 						</div>
 					{/if}
 
-					<div class="my-2">
+				<hr class=" border-gray-50 dark:border-gray-850/30 my-2.5 w-full" />
+
+				<div class="my-1">
+					<div class="mb-2 text-xs text-gray-500">{$i18n.t('Group Type')}</div>
+					<select
+						class="w-full text-sm bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 outline-hidden"
+						bind:value={data.group_type}
+					>
+						<option value="topic">{$i18n.t('Topic')} - {$i18n.t('chat organizer, no directory')}</option>
+						<option value="project">{$i18n.t('Project')} - {$i18n.t('local directory + terminal')}</option>
+						<option value="scratch">{$i18n.t('Scratch')} - {$i18n.t('temporary, auto-cleanup')}</option>
+					</select>
+				</div>
+
+				{#if data.group_type === 'project'}
+					<div class="my-1">
+						<div class="mb-2 text-xs text-gray-500">{$i18n.t('Project Directory')}</div>
+						<input
+							class="w-full text-sm bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700"
+							type="text"
+							bind:value={data.project_path}
+							placeholder="~/dev/apps/personal/pinpoint"
+							autocomplete="off"
+						/>
+						<div class="mt-1 text-xs text-gray-400">
+							{$i18n.t('Absolute path to the project directory. Enables terminal and IDE integration.')}
+						</div>
+					</div>
+				{/if}
+
+				<div class="my-1">
+					<div class="mb-2 text-xs text-gray-500">{$i18n.t('Tags')}</div>
+					<input
+						class="w-full text-sm bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700"
+						type="text"
+						value={data.tags.join(', ')}
+						on:input={(e) => {
+							const target = e.target as HTMLInputElement;
+							if (target) {
+								data.tags = target.value.split(',').map((t) => t.trim()).filter(Boolean);
+							}
+						}}
+						placeholder="python, fastapi, cli"
+						autocomplete="off"
+					/>
+				</div>
+
+				<div class="my-1">
+					<div class="mb-2 text-xs text-gray-500">{$i18n.t('Workspace')}</div>
+					<input
+						class="w-full text-sm bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700"
+						type="text"
+						bind:value={data.workspace}
+						placeholder="personal"
+						autocomplete="off"
+					/>
+				</div>
+
+				<div class="my-2">
 						<Knowledge bind:selectedItems={data.files}>
 							<div slot="label">
 								<div class="flex w-full justify-between">

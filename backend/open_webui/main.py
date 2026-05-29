@@ -503,6 +503,7 @@ from open_webui.routers import (
     tools,
     users,
     utils,
+    workspaces,
 )
 from open_webui.routers.retrieval import (
     get_ef,
@@ -1428,6 +1429,7 @@ app.include_router(skills.router, prefix='/api/v1/skills', tags=['skills'])
 
 app.include_router(memories.router, prefix='/api/v1/memories', tags=['memories'])
 app.include_router(folders.router, prefix='/api/v1/folders', tags=['folders'])
+app.include_router(workspaces.router, prefix='/api/v1/workspaces', tags=['workspaces'])
 app.include_router(groups.router, prefix='/api/v1/groups', tags=['groups'])
 app.include_router(files.router, prefix='/api/v1/files', tags=['files'])
 app.include_router(functions.router, prefix='/api/v1/functions', tags=['functions'])

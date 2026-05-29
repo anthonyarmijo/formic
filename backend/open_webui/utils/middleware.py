@@ -3025,6 +3025,17 @@ async def background_tasks_handler(ctx):
     tasks = ctx['tasks']
     event_emitter = ctx['event_emitter']
 
+    # FORMIC PATCH: Skip background tasks for Hermes Agent connections.
+    # Hermes manages its own session titles, tags, follow-ups, and web-search
+    # analysis.  Firing these as parallel API calls competes for the same
+    # DeepSeek API key and causes visible latency on the user's actual message.
+    # See: docs/dev/patches/hermes-skip-background-tasks.md
+    model = ctx.get('model', {})
+    if isinstance(model, dict):
+        model_id = model.get('id', '')
+        if model_id == 'hermes-agent':
+            return
+
     message = None
     messages = []
 

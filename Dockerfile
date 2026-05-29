@@ -28,7 +28,7 @@ FROM --platform=$BUILDPLATFORM node:22-alpine3.20 AS build
 ARG BUILD_HASH
 
 # Set Node.js options (heap limit Allocation failed - JavaScript heap out of memory)
-# ENV NODE_OPTIONS="--max-old-space-size=4096"
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 WORKDIR /app
 
@@ -184,7 +184,21 @@ COPY --chown=$UID:$GID --from=build /app/package.json /app/package.json
 # copy backend files
 COPY --chown=$UID:$GID ./backend .
 
+# Replace upstream build/static assets with Formic-branded ones
+# (config.py overwrites backend static from build/static at runtime,
+# so we must fix the source of truth)
+RUN cp /app/backend/open_webui/static/favicon.png /app/build/static/favicon.png && \
+    cp /app/backend/open_webui/static/favicon-dark.png /app/build/static/favicon-dark.png && \
+    cp /app/backend/open_webui/static/favicon.svg /app/build/static/favicon.svg && \
+    cp /app/backend/open_webui/static/favicon-96x96.png /app/build/static/favicon-96x96.png && \
+    cp /app/backend/open_webui/static/splash.png /app/build/static/splash.png && \
+    cp /app/backend/open_webui/static/splash-dark.png /app/build/static/splash-dark.png
+
 EXPOSE 8080
+
+# Bundled Open Terminal — auto-configured for Project groups
+ENV TERMINAL_SERVER_CONNECTIONS='[{"id":"formic-terminal","name":"Formic Terminal","url":"http://localhost:8000","key":"formic-terminal-key","server_type":"terminal","enabled":true}]'
+RUN pip3 install --no-cache-dir open-terminal
 
 HEALTHCHECK CMD curl --silent --fail http://localhost:${PORT:-8080}/health | jq -ne 'input.status == true' || exit 1
 

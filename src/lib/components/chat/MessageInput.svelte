@@ -33,9 +33,11 @@
 		showControls,
 		showSettings,
 		selectedTerminalId,
+		selectedFolder,
 		TTSWorker,
 		temporaryChatEnabled
 	} from '$lib/stores';
+	import { terminalOpen, terminalProjectPath } from '$lib/stores/terminal';
 
 	import {
 		convertHeicToJpeg,
@@ -500,6 +502,13 @@
 		(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.terminal ?? true
 	);
 
+	let projectPath = '';
+	$: projectPath =
+		$selectedFolder?.data?.group_type === 'project' &&
+		typeof $selectedFolder?.data?.project_path === 'string'
+			? $selectedFolder.data.project_path.trim()
+			: '';
+
 	let toggleFilters = [];
 	$: toggleFilters = (atSelectedModel?.id ? [atSelectedModel.id] : selectedModels)
 		.map((id) => ($models.find((model) => model.id === id) || {})?.filters ?? [])
@@ -539,6 +548,15 @@
 	$: if ($selectedTerminalId && terminalCapableModels.length === 0) {
 		selectedTerminalId.set(null);
 	}
+
+	const toggleProjectTerminal = () => {
+		if (!projectPath) {
+			return;
+		}
+
+		terminalProjectPath.set(projectPath);
+		terminalOpen.set(!$terminalOpen);
+	};
 
 	const scrollToBottom = () => {
 		const element = document.getElementById('messages-container');
@@ -1946,6 +1964,28 @@
 												($_user?.permissions?.features?.direct_tool_servers ?? true)}
 											{#if terminalCapableModels.length > 0 && (($terminalServers ?? []).some((t) => t.id) || (hasDirectToolServerAccess && (($terminalServers ?? []).some((t) => !t.id) || ($settings?.terminalServers ?? []).some((s) => s.url))))}
 												<TerminalMenu bind:show={showTerminalMenu} />
+											{/if}
+
+											{#if projectPath}
+												<Tooltip
+													content={$terminalOpen
+														? $i18n.t('Close project terminal')
+														: $i18n.t('Open project terminal')}
+												>
+													<button
+														id="project-terminal-button"
+														class=" text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 transition rounded-full p-1.5 self-center mr-0.5 {$terminalOpen
+															? 'bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-100'
+															: ''}"
+														type="button"
+														on:click={toggleProjectTerminal}
+														aria-label={$terminalOpen
+															? $i18n.t('Close project terminal')
+															: $i18n.t('Open project terminal')}
+													>
+														<Terminal className="size-5 translate-y-[0.5px]" strokeWidth="2" />
+													</button>
+												</Tooltip>
 											{/if}
 
 											{#if $_user?.role === 'admin' || ($_user?.permissions?.chat?.stt ?? true)}

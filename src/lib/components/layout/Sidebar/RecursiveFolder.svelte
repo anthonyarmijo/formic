@@ -614,29 +614,31 @@
 					{/if}
 				</div>
 
-				<button
-					class="absolute z-10 right-2 invisible group-hover:visible self-center flex items-center dark:text-gray-300"
-				>
-					<FolderMenu
-						onEdit={() => {
-							showFolderModal = true;
-						}}
-						onDelete={() => {
-							showDeleteConfirm = true;
-						}}
-						onExport={() => {
-							exportHandler();
-						}}
-						onCreateSub={() => {
-							createSubFolderParentId = folderId;
-							showCreateSubFolderModal = true;
-						}}
+				<div class="ml-1 flex flex-shrink-0 items-center gap-0.5">
+					<button
+						class="invisible group-hover:visible self-center flex items-center dark:text-gray-300"
 					>
-						<div class="p-1 dark:hover:bg-gray-850 rounded-lg touch-auto">
-							<EllipsisHorizontal className="size-4" strokeWidth="2.5" />
-						</div>
-					</FolderMenu>
-				</button>
+						<FolderMenu
+							onEdit={() => {
+								showFolderModal = true;
+							}}
+							onDelete={() => {
+								showDeleteConfirm = true;
+							}}
+							onExport={() => {
+								exportHandler();
+							}}
+							onCreateSub={() => {
+								createSubFolderParentId = folderId;
+								showCreateSubFolderModal = true;
+							}}
+						>
+							<div class="p-1 dark:hover:bg-gray-850 rounded-lg touch-auto">
+								<EllipsisHorizontal className="size-4" strokeWidth="2.5" />
+							</div>
+						</FolderMenu>
+					</button>
+				</div>
 			</div>
 		</div>
 

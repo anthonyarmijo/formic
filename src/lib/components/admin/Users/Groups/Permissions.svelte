@@ -838,7 +838,7 @@
 		<div class="flex flex-col w-full">
 			<div class="flex w-full justify-between my-1">
 				<div class=" self-center text-xs font-medium">
-					{$i18n.t('Folders')}
+					{$i18n.t('Groups')}
 				</div>
 				<Switch bind:state={permissions.features.folders} />
 			</div>

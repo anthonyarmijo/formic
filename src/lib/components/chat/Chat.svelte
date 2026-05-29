@@ -51,6 +51,9 @@
 		desktopEvent
 	} from '$lib/stores';
 
+	import { terminalOpen, terminalProjectPath } from '$lib/stores/terminal';
+	import TerminalDrawer from './TerminalDrawer.svelte';
+
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 	import {
@@ -3214,6 +3217,14 @@
 						{/if}
 					</div>
 				</Pane>
+
+				{#if $selectedFolder?.data?.group_type === 'project' && $selectedFolder?.data?.project_path}
+					<TerminalDrawer
+						bind:open={$terminalOpen}
+						projectPath={$selectedFolder.data.project_path}
+						folderId={$selectedFolder.id}
+					/>
+				{/if}
 
 				<ChatControls
 					bind:this={controlPaneComponent}
