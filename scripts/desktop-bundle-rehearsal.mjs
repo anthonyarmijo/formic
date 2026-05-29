@@ -771,10 +771,12 @@ async function waitForEndpoint(url, validate, timeoutMs, assertStillValid = () =
 function assertNoStartupFailureOutput(output) {
   const failureMarkers = [
     'Backend startup failed',
+    'Renderer startup failed',
     'Failed to start Formic',
     'Server exited with code',
     'ModuleNotFoundError',
-    'Traceback (most recent call last)'
+    'Traceback (most recent call last)',
+    'UnhandledPromiseRejectionWarning'
   ];
   const marker = failureMarkers.find((candidate) => output.includes(candidate));
 
@@ -969,6 +971,8 @@ async function smokePackagedApp(packagedApp, options, { managed = false, runtime
   electron.stdout.on('data', capture);
   electron.stderr.on('data', capture);
 
+  let smokeError = null;
+
   try {
     await waitForEndpoint(`${serverUrl}/health`, (json) => {
       if (json.status !== true) {
@@ -993,8 +997,15 @@ async function smokePackagedApp(packagedApp, options, { managed = false, runtime
     console.log(
       `[formic-rehearsal] Packaged resources ${managed ? 'managed ' : ''}smoke passed: /health, /ready, /api/version=${version.version}`
     );
+  } catch (error) {
+    smokeError = error;
   } finally {
     await stopProcessGroup(electron);
+  }
+
+  assertNoStartupFailureOutput(output);
+  if (smokeError) {
+    throw smokeError;
   }
 }
 
@@ -1394,7 +1405,8 @@ async function prepareNotarizationZip(appDir) {
   await run('ditto', ['-c', '-k', '--keepParent', path.basename(appDir), zipPath], {
     cwd: path.dirname(appDir)
   });
-  console.log(`[formic-rehearsal] Notarization artifact ready: ${displayPath(zipPath)}`);
+  const zipStat = await stat(zipPath);
+  console.log(`[formic-rehearsal] Notarization artifact ready: ${displayPath(zipPath)} (${formatBytes(zipStat.size)})`);
   return zipPath;
 }
 
@@ -1539,6 +1551,8 @@ async function smokeBundle(
   electron.stdout.on('data', capture);
   electron.stderr.on('data', capture);
 
+  let smokeError = null;
+
   try {
     await waitForEndpoint(`${serverUrl}/health`, (json) => {
       if (json.status !== true) {
@@ -1569,8 +1583,15 @@ async function smokeBundle(
     }
 
     console.log(`[formic-rehearsal] Smoke passed: /health, /ready, /api/version=${version.version}`);
+  } catch (error) {
+    smokeError = error;
   } finally {
     await stopProcessGroup(electron);
+  }
+
+  assertNoStartupFailureOutput(output);
+  if (smokeError) {
+    throw smokeError;
   }
 }
 

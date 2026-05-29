@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 type ServerMode = 'auto' | 'spawn' | 'external';
 type ActiveServerMode = 'auto' | 'spawn' | 'existing' | 'spawned' | 'external';
 type ServerStatus = 'checking' | 'starting' | 'healthy' | 'ready' | 'failed';
-type RendererStatus = 'waiting' | 'checking' | 'ready' | 'loading' | 'loaded' | 'failed';
+type RendererStatus = 'waiting' | 'checking' | 'ready' | 'loading' | 'loaded' | 'skipped' | 'failed';
 
 type ProbeResult = {
   ok: boolean;
@@ -367,6 +367,10 @@ function shouldWaitForRenderer(): boolean {
   }
 }
 
+function shouldSkipRendererLoad(): boolean {
+  return rendererUrl === 'about:blank';
+}
+
 async function waitForRenderer(timeoutMs = rendererReadyTimeoutMs): Promise<void> {
   if (!shouldWaitForRenderer()) {
     rendererStatus = 'ready';
@@ -551,6 +555,7 @@ function startupHtml(): string {
     'function messageFor(state) {',
     '  if (state.serverStatus === "starting") return "Starting the bundled FastAPI sidecar...";',
     '  if (state.serverStatus === "healthy") return "Backend is healthy; waiting for readiness...";',
+    '  if (state.rendererStatus === "skipped") return "API-only smoke is running without loading a renderer.";',
     '  if (state.serverStatus === "ready" && state.rendererStatus !== "ready") return "Backend is ready; waiting for the Svelte renderer...";',
     '  if (state.rendererStatus === "loading") return "Loading the Formic app...";',
     '  return "Checking the local Formic backend...";',
@@ -630,6 +635,13 @@ async function createWindow(): Promise<void> {
 
   try {
     await waitForRenderer();
+
+    if (shouldSkipRendererLoad()) {
+      rendererStatus = 'skipped';
+      console.log(`[formic-desktop] Renderer load skipped for API-only smoke: ${rendererUrl}`);
+      return;
+    }
+
     rendererStatus = 'loading';
     await window.loadURL(rendererUrl);
     rendererStatus = 'loaded';

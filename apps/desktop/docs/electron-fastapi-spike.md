@@ -187,6 +187,10 @@ The command keeps the rehearsal scoped to `build/desktop-rehearsal`. electron-bu
 
 If notarization credentials are missing or incomplete, the notarization command fails up front with setup instructions. The preflight and Developer ID signing-only commands remain free of notarization credential requirements.
 
+Current Phase 0 checkpoint: `APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-notarization-check` has succeeded end-to-end with `build/desktop-rehearsal/notarization/Formic-notarization.zip` around 609 MB (`638133905` bytes), `notarytool` status `Accepted`, stapling validation passing, `spctl` accepting the stapled app with `source=Notarized Developer ID`, and the stapled `.app` launching `Contents/Resources/formic-server/python-runtime` as `bundled managed Python runtime`. The API smoke passed `/health`, `/ready`, and `/api/version=0.9.5`.
+
+A May 29, 2026 rerun rebuilt the zip (`638134193` bytes) and verified Developer ID signing, but `notarytool` could not find the `formic-notary` keychain password item. Recreate that local profile before refreshing live Apple notarization evidence.
+
 ## Decision Notes
 
 - The Electron shell can check for an already-running backend before spawning its own process.
@@ -197,9 +201,10 @@ If notarization credentials are missing or incomplete, the notarization command 
 - In a packaged app, Electron will also look for that server root at `process.resourcesPath/formic-server`.
 - Desktop launches set `FORMIC_DESKTOP=true` and default `FORMIC_LAZY_EMBEDDINGS=true`, deferring local embedding model initialization until first retrieval use.
 - Electron shows a startup screen immediately, waits for FastAPI health, then waits for the renderer URL before loading the app.
+- `FORMIC_RENDERER_URL=about:blank` is an API-only smoke sentinel. Electron now skips renderer loading for that URL after backend readiness, keeping API smoke distinct from full renderer smoke and avoiding teardown-time `ERR_FAILED` noise.
 - Backend failure screens include the selected launch plan and recent sidecar output.
 - Bundle-specific failures now catch missing backend entry files, missing lock/context files, or missing bundled Python before launching a process.
-- The next Phase 0 decision is the production signing recipe for bundled managed Python. Docker/server connection mode should stay as the fallback unless the bundled rehearsal proves too brittle.
+- The next Phase 0 boundary is installer/distribution packaging around the already signed/notarized managed `.app`: restore repeatable notary credentials, choose DMG/pkg/container shape, decide whether to prune the managed runtime before compression, and prove the installer preserves the stapled app seal. Docker/server connection mode should stay as the fallback unless the bundled rehearsal proves too brittle. Phase 1 memory work starts after this desktop packaging boundary, not inside it.
 
 ## Results
 
@@ -220,6 +225,8 @@ If notarization credentials are missing or incomplete, the notarization command 
 - `npm run desktop:resources:managed-signing-preflight` now inventories the managed packaged app's Python Mach-O payload and intended signing order without Apple credentials.
 - `npm run desktop:resources:managed-developer-id-sign-check` now provides the credential-gated Developer ID hardened-runtime signing dry run; it still does not notarize or staple.
 - `npm run desktop:resources:managed-notarization-check` now provides the credential-gated notarization/stapling dry run for the Developer ID signed managed `.app`.
+- The managed notarization/stapling dry run has passed once end-to-end: accepted zip, stapled app, `spctl` accepted as `Notarized Developer ID`, bundled managed Python runtime launch, and `/health`, `/ready`, `/api/version=0.9.5`.
+- The old `about:blank` renderer warning was a main-process API-smoke bug, not a backend failure. API-only smoke now skips renderer loading and the rehearsal treats renderer startup failures or unhandled promise rejections as failures.
 
 ## Current Packaging Read
 
@@ -227,4 +234,4 @@ Recommended path: keep pursuing a bundled Python sidecar as the Phase 0 default 
 
 Fallback path: keep `FORMIC_SERVER_MODE=external` for Docker or a user-managed server. Do not make this the primary desktop story unless the bundled-venv rehearsal fails on clean machines.
 
-Remaining blocker before distributable installer work: choose the final DMG/pkg/container shape and decide whether the managed-runtime payload needs pruning before installer compression. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough.
+Remaining Phase 0 work before distributable installer work: restore the local notarytool profile so live notarization can be refreshed on demand, choose the final DMG/pkg/container shape, decide whether the managed-runtime payload needs pruning before installer compression, and verify the installer does not break the stapled app seal. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough. Phase 1 is product/runtime memory work and should start after this desktop release-readiness boundary.
