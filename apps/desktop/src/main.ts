@@ -7,7 +7,14 @@ import { fileURLToPath } from 'node:url';
 
 type ServerMode = 'auto' | 'spawn' | 'external';
 type ActiveServerMode = 'auto' | 'spawn' | 'existing' | 'spawned' | 'external';
-type ServerStatus = 'checking' | 'starting' | 'healthy' | 'failed';
+type ServerStatus = 'checking' | 'starting' | 'healthy' | 'ready' | 'failed';
+type RendererStatus = 'waiting' | 'checking' | 'ready' | 'loading' | 'loaded' | 'failed';
+
+type ProbeResult = {
+  ok: boolean;
+  detail: string;
+  statusCode?: number;
+};
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../..');
@@ -17,12 +24,20 @@ const serverPort = Number(process.env.FORMIC_SERVER_PORT ?? '8080');
 const serverUrl = process.env.FORMIC_SERVER_URL ?? `http://127.0.0.1:${serverPort}`;
 const rendererUrl = process.env.FORMIC_RENDERER_URL ?? 'http://127.0.0.1:5173';
 const healthUrl = new URL('/health', serverUrl).toString();
+const readinessUrl = new URL('/ready', serverUrl).toString();
+const serverReadyTimeoutMs = parseTimeout(process.env.FORMIC_SERVER_READY_TIMEOUT_MS, 120000);
+const rendererReadyTimeoutMs = parseTimeout(process.env.FORMIC_RENDERER_READY_TIMEOUT_MS, 120000);
 const configuredServerMode = parseServerMode(process.env.FORMIC_SERVER_MODE);
 
 let serverProcess: ChildProcessWithoutNullStreams | null = null;
 let serverStatus: ServerStatus = 'checking';
+let rendererStatus: RendererStatus = 'waiting';
 let activeServerMode: ActiveServerMode = configuredServerMode;
 let lastServerError: string | null = null;
+let lastServerProbe: string | null = null;
+let lastRendererError: string | null = null;
+let lastRendererProbe: string | null = null;
+let isQuitting = false;
 
 function parseServerMode(mode: string | undefined): ServerMode {
   if (mode === 'spawn' || mode === 'external') {
@@ -32,17 +47,146 @@ function parseServerMode(mode: string | undefined): ServerMode {
   return 'auto';
 }
 
+function parseTimeout(value: string | undefined, fallbackMs: number): number {
+  if (!value) {
+    return fallbackMs;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
-async function isServerHealthy(): Promise<boolean> {
+function originFor(value: string): string | null {
   try {
-    const response = await fetch(healthUrl, { signal: AbortSignal.timeout(1200) });
-    return response.ok;
+    return new URL(value).origin;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function buildCorsAllowOrigin(): string {
+  const origins = [
+    originFor(rendererUrl),
+    originFor(serverUrl),
+    'http://127.0.0.1:5173',
+    'http://localhost:5173',
+    `http://127.0.0.1:${serverPort}`,
+    `http://localhost:${serverPort}`
+  ].filter((origin): origin is string => Boolean(origin));
+
+  return [...new Set(origins)].join(';');
+}
+
+async function probeUrl(
+  url: string,
+  options: {
+    label: string;
+    timeoutMs?: number;
+    requiredText?: string[];
+    requireJsonStatus?: boolean;
+  }
+): Promise<ProbeResult> {
+  const timeoutMs = options.timeoutMs ?? 1200;
+
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    const body = await response.text();
+    const bodyPreview = body.trim().slice(0, 240);
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        statusCode: response.status,
+        detail: `${options.label} responded ${response.status}${bodyPreview ? `: ${bodyPreview}` : ''}`
+      };
+    }
+
+    if (options.requireJsonStatus) {
+      try {
+        const json = JSON.parse(body) as { status?: unknown };
+        if (json.status !== true) {
+          return {
+            ok: false,
+            statusCode: response.status,
+            detail: `${options.label} responded ${response.status}, but status was not true`
+          };
+        }
+      } catch {
+        return {
+          ok: false,
+          statusCode: response.status,
+          detail: `${options.label} responded ${response.status}, but did not return JSON`
+        };
+      }
+    }
+
+    if (options.requiredText?.length && !options.requiredText.some((marker) => body.includes(marker))) {
+      return {
+        ok: false,
+        statusCode: response.status,
+        detail: `${options.label} responded ${response.status}, but did not look like the Formic renderer`
+      };
+    }
+
+    return { ok: true, statusCode: response.status, detail: `${options.label} responded ${response.status}` };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, detail: `${options.label} probe failed: ${message}` };
+  }
+}
+
+async function waitForServer(timeoutMs = serverReadyTimeoutMs): Promise<void> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (lastServerError && !serverProcess && activeServerMode === 'spawned') {
+      serverStatus = 'failed';
+      throw new Error(lastServerError);
+    }
+
+    const healthProbe = await probeUrl(healthUrl, {
+      label: 'Backend health',
+      requireJsonStatus: true
+    });
+    lastServerProbe = healthProbe.detail;
+
+    if (healthProbe.ok) {
+      serverStatus = serverStatus === 'starting' ? 'healthy' : serverStatus;
+
+      const readinessProbe = await probeUrl(readinessUrl, {
+        label: 'Backend readiness',
+        requireJsonStatus: true
+      });
+      lastServerProbe = readinessProbe.detail;
+
+      if (readinessProbe.ok) {
+        serverStatus = 'ready';
+        console.log(`[formic-desktop] Backend ready at ${readinessUrl}`);
+        return;
+      }
+    }
+
+    await sleep(500);
+  }
+
+  serverStatus = 'failed';
+  throw new Error(
+    [
+      `Timed out waiting for Formic server readiness at ${readinessUrl}`,
+      lastServerProbe ? `Last probe: ${lastServerProbe}` : null,
+      lastServerError ? `Last server error: ${lastServerError}` : null
+    ]
+      .filter(Boolean)
+      .join('\n')
+  );
 }
 
 function shouldWaitForRenderer(): boolean {
@@ -54,47 +198,39 @@ function shouldWaitForRenderer(): boolean {
   }
 }
 
-async function isRendererReady(): Promise<boolean> {
+async function waitForRenderer(timeoutMs = rendererReadyTimeoutMs): Promise<void> {
   if (!shouldWaitForRenderer()) {
-    return true;
+    rendererStatus = 'ready';
+    return;
   }
 
-  try {
-    const response = await fetch(rendererUrl, { signal: AbortSignal.timeout(1200) });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForServer(timeoutMs = 120000): Promise<void> {
+  rendererStatus = 'checking';
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
-    if (await isServerHealthy()) {
-      serverStatus = 'healthy';
+    const rendererProbe = await probeUrl(rendererUrl, {
+      label: 'Renderer',
+      requiredText: ['<title>Formic</title>', '/static/loader.js']
+    });
+    lastRendererProbe = rendererProbe.detail;
+
+    if (rendererProbe.ok) {
+      rendererStatus = 'ready';
+      console.log(`[formic-desktop] Renderer ready at ${rendererUrl}`);
       return;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await sleep(500);
   }
 
-  serverStatus = 'failed';
-  throw new Error(`Timed out waiting for Formic server at ${healthUrl}`);
-}
-
-async function waitForRenderer(timeoutMs = 120000): Promise<void> {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    if (await isRendererReady()) {
-      return;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-
-  throw new Error(`Timed out waiting for Formic renderer at ${rendererUrl}`);
+  rendererStatus = 'failed';
+  lastRendererError = [
+    `Timed out waiting for Formic renderer at ${rendererUrl}`,
+    lastRendererProbe ? `Last probe: ${lastRendererProbe}` : null
+  ]
+    .filter(Boolean)
+    .join('\n');
+  throw new Error(lastRendererError);
 }
 
 function spawnServer(): void {
@@ -124,12 +260,14 @@ function spawnServer(): void {
     cwd: repoRoot,
     env: {
       ...process.env,
-      CORS_ALLOW_ORIGIN: [rendererUrl, serverUrl].join(';'),
+      CORS_ALLOW_ORIGIN: buildCorsAllowOrigin(),
       FORMIC_DESKTOP: 'true',
       FORMIC_LAZY_EMBEDDINGS: process.env.FORMIC_LAZY_EMBEDDINGS ?? 'true',
       FORWARDED_ALLOW_IPS: '*',
       PORT: String(serverPort),
-      PYTHONPATH: backendDir
+      PYTHONPATH: backendDir,
+      STATIC_DIR: process.env.STATIC_DIR ?? path.join(app.getPath('userData'), 'backend-static'),
+      WEBUI_URL: serverUrl
     }
   });
 
@@ -141,12 +279,18 @@ function spawnServer(): void {
     console.error(`[formic-server] ${chunk.toString().trimEnd()}`);
   });
 
+  serverProcess.once('error', (error) => {
+    serverStatus = 'failed';
+    lastServerError = `Failed to start server process: ${error.message}`;
+    serverProcess = null;
+  });
+
   serverProcess.once('exit', (code, signal) => {
-    if (serverStatus !== 'healthy') {
+    if (!isQuitting) {
       serverStatus = 'failed';
+      lastServerError = `Server exited with code ${code ?? 'null'} and signal ${signal ?? 'null'}`;
     }
 
-    lastServerError = `Server exited with code ${code ?? 'null'} and signal ${signal ?? 'null'}`;
     serverProcess = null;
   });
 }
@@ -154,20 +298,30 @@ function spawnServer(): void {
 async function ensureServer(): Promise<void> {
   serverStatus = 'checking';
   lastServerError = null;
+  lastServerProbe = null;
 
-  if (await isServerHealthy()) {
+  const healthProbe = await probeUrl(healthUrl, {
+    label: 'Backend health',
+    requireJsonStatus: true
+  });
+  lastServerProbe = healthProbe.detail;
+
+  if (healthProbe.ok) {
     activeServerMode = configuredServerMode === 'external' ? 'external' : 'existing';
-    serverStatus = 'healthy';
+    console.log(`[formic-desktop] Connecting to ${activeServerMode} backend at ${serverUrl}`);
+    await waitForServer();
     return;
   }
 
   if (configuredServerMode === 'external') {
-    serverStatus = 'failed';
-    throw new Error(`External Formic server is not healthy at ${healthUrl}`);
+    activeServerMode = 'external';
+    await waitForServer();
+    return;
   }
 
   activeServerMode = 'spawned';
   serverStatus = 'starting';
+  console.log(`[formic-desktop] Starting FastAPI backend at ${serverUrl}`);
   spawnServer();
   await waitForServer();
 }
@@ -184,67 +338,84 @@ function startupHtml(): string {
     '<style>',
     ':root { color-scheme: light dark; }',
     'body { margin: 0; min-height: 100vh; display: grid; place-items: center; font: 14px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #101418; color: #eef3f6; }',
-    'main { width: min(520px, calc(100vw - 48px)); }',
+    'main { width: min(560px, calc(100vw - 48px)); }',
     'h1 { margin: 0 0 12px; font-size: 28px; font-weight: 650; letter-spacing: 0; }',
     'p { margin: 0 0 18px; color: #b7c1c8; line-height: 1.5; }',
     '.bar { height: 6px; overflow: hidden; border-radius: 999px; background: #28313a; }',
     '.bar span { display: block; width: 42%; height: 100%; border-radius: inherit; background: #67d391; animation: slide 1.2s ease-in-out infinite; }',
-    'dl { display: grid; grid-template-columns: 92px 1fr; gap: 8px 14px; margin: 22px 0 0; color: #d7dee3; }',
+    'dl { display: grid; grid-template-columns: 112px 1fr; gap: 8px 14px; margin: 22px 0 0; color: #d7dee3; }',
     'dt { color: #83909a; }',
     'dd { margin: 0; overflow-wrap: anywhere; }',
+    'code { color: #eef3f6; }',
     '@keyframes slide { 0% { transform: translateX(-100%); } 50% { transform: translateX(80%); } 100% { transform: translateX(250%); } }',
     '</style>',
     '<main>',
     '<h1>Starting Formic</h1>',
-    '<p id="message">Checking the local Formic server...</p>',
+    '<p id="message">Checking the local Formic backend...</p>',
     '<div class="bar"><span></span></div>',
     '<dl>',
-    '<dt>Status</dt><dd id="status">checking</dd>',
+    '<dt>Backend</dt><dd id="backend">checking</dd>',
+    '<dt>Renderer</dt><dd id="renderer">waiting</dd>',
     '<dt>Mode</dt><dd id="mode">auto</dd>',
-    '<dt>Health</dt><dd id="health"></dd>',
+    '<dt>Backend URL</dt><dd id="server"></dd>',
+    '<dt>Renderer URL</dt><dd id="renderer-url"></dd>',
+    '<dt>Last probe</dt><dd id="probe"></dd>',
     '</dl>',
     '</main>',
     '<script>',
+    'function messageFor(state) {',
+    '  if (state.serverStatus === "starting") return "Starting the bundled FastAPI sidecar...";',
+    '  if (state.serverStatus === "healthy") return "Backend is healthy; waiting for readiness...";',
+    '  if (state.serverStatus === "ready" && state.rendererStatus !== "ready") return "Backend is ready; waiting for the Svelte renderer...";',
+    '  if (state.rendererStatus === "loading") return "Loading the Formic app...";',
+    '  return "Checking the local Formic backend...";',
+    '}',
     'async function refresh() {',
     '  if (!window.formicDesktop) return;',
     '  const state = await window.formicDesktop.getServerStatus();',
-    '  document.getElementById("status").textContent = state.status;',
+    '  document.getElementById("backend").textContent = state.serverStatus;',
+    '  document.getElementById("renderer").textContent = state.rendererStatus;',
     '  document.getElementById("mode").textContent = state.mode;',
-    '  document.getElementById("health").textContent = state.healthUrl;',
-    '  document.getElementById("message").textContent = state.status === "starting" ? "Starting the bundled FastAPI sidecar..." : "Checking the local Formic server...";',
+    '  document.getElementById("server").textContent = state.serverUrl;',
+    '  document.getElementById("renderer-url").textContent = state.rendererUrl;',
+    '  document.getElementById("probe").textContent = state.lastServerProbe || state.lastRendererProbe || "";',
+    '  document.getElementById("message").textContent = messageFor(state);',
     '}',
     'refresh(); setInterval(refresh, 500);',
     '</script>'
   ].join('');
 }
 
-function serverFailureHtml(message: string): string {
+function failureHtml(title: string, intro: string, details: string[]): string {
   return [
     '<!doctype html>',
     '<meta charset="utf-8">',
-    '<title>Formic Server Failed</title>',
-    '<body style="font: 14px system-ui; margin: 32px; max-width: 760px; line-height: 1.5;">',
-    '<h1>Formic Server Failed</h1>',
-    '<p>The Electron shell started, but the FastAPI sidecar did not become healthy.</p>',
-    `<pre style="white-space: pre-wrap; padding: 16px; background: #f5f5f5;">${escapeHtml(message)}</pre>`,
-    `<p>Mode: <code>${activeServerMode}</code></p>`,
-    `<p>Health URL: <code>${healthUrl}</code></p>`,
+    `<title>${escapeHtml(title)}</title>`,
+    '<body style="font: 14px system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 32px; max-width: 800px; line-height: 1.5;">',
+    `<h1>${escapeHtml(title)}</h1>`,
+    `<p>${escapeHtml(intro)}</p>`,
+    `<pre style="white-space: pre-wrap; padding: 16px; background: #f5f5f5; border-radius: 8px;">${escapeHtml(details.filter(Boolean).join('\n'))}</pre>`,
     '</body>'
   ].join('');
 }
 
+function serverFailureHtml(message: string): string {
+  return failureHtml('Formic Backend Failed', 'Electron opened, but the FastAPI backend did not become ready.', [
+    message,
+    `Mode: ${activeServerMode}`,
+    `Health URL: ${healthUrl}`,
+    `Readiness URL: ${readinessUrl}`,
+    lastServerProbe ? `Last probe: ${lastServerProbe}` : '',
+    lastServerError ? `Last process error: ${lastServerError}` : ''
+  ]);
+}
+
 function rendererFailureHtml(message: string): string {
-  return [
-    '<!doctype html>',
-    '<meta charset="utf-8">',
-    '<title>Formic Renderer Failed</title>',
-    '<body style="font: 14px system-ui; margin: 32px; max-width: 760px; line-height: 1.5;">',
-    '<h1>Formic Renderer Failed</h1>',
-    '<p>The local Formic server is healthy, but the Svelte renderer did not become available.</p>',
-    `<pre style="white-space: pre-wrap; padding: 16px; background: #f5f5f5;">${escapeHtml(message)}</pre>`,
-    `<p>Renderer URL: <code>${rendererUrl}</code></p>`,
-    '</body>'
-  ].join('');
+  return failureHtml('Formic Renderer Failed', 'The FastAPI backend is ready, but the Svelte renderer did not become available.', [
+    message,
+    `Renderer URL: ${rendererUrl}`,
+    lastRendererProbe ? `Last probe: ${lastRendererProbe}` : ''
+  ]);
 }
 
 async function createWindow(): Promise<void> {
@@ -265,26 +436,40 @@ async function createWindow(): Promise<void> {
     await ensureServer();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    console.error(`[formic-desktop] Backend startup failed: ${message}`);
     await window.loadURL(htmlDataUrl(serverFailureHtml(message)));
     return;
   }
 
   try {
     await waitForRenderer();
+    rendererStatus = 'loading';
     await window.loadURL(rendererUrl);
+    rendererStatus = 'loaded';
+    console.log(`[formic-desktop] Loaded renderer in Electron from ${rendererUrl}`);
   } catch (error) {
+    rendererStatus = 'failed';
     const message = error instanceof Error ? error.message : String(error);
+    lastRendererError = message;
+    console.error(`[formic-desktop] Renderer startup failed: ${message}`);
     await window.loadURL(htmlDataUrl(rendererFailureHtml(message)));
   }
 }
 
 ipcMain.handle('formic:server-status', () => ({
   status: serverStatus,
+  serverStatus,
+  rendererStatus,
   mode: activeServerMode,
   configuredMode: configuredServerMode,
   serverUrl,
   healthUrl,
-  lastServerError
+  readinessUrl,
+  rendererUrl,
+  lastServerError,
+  lastServerProbe,
+  lastRendererError,
+  lastRendererProbe
 }));
 
 app.whenReady().then(createWindow);
@@ -302,17 +487,17 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', async () => {
+  isQuitting = true;
+
   if (!serverProcess) {
     return;
   }
 
-  serverProcess.kill('SIGTERM');
-  await Promise.race([
-    once(serverProcess, 'exit'),
-    new Promise((resolve) => setTimeout(resolve, 3000))
-  ]);
+  const child = serverProcess;
+  child.kill('SIGTERM');
+  await Promise.race([once(child, 'exit'), sleep(3000)]);
 
-  if (serverProcess) {
-    serverProcess.kill('SIGKILL');
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
   }
 });
