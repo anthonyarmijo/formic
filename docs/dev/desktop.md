@@ -144,11 +144,13 @@ When a local Developer ID Application certificate and private key are available,
 FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" npm run desktop:resources:managed-developer-id-sign-check
 ```
 
-`CSC_NAME` is accepted as a fallback identity variable. The command packages the managed app with `FORMIC_ELECTRON_BUILDER_SIGNING_MODE=developer-id`, enables hardened runtime, and uses the tracked minimal Electron entitlements. electron-builder signs Electron-managed app/framework files while ignoring `Contents/Resources/formic-server`; the rehearsal script then signs only discovered Python runtime Mach-O files deepest-first, re-signs the outer `.app`, verifies with `codesign --verify --deep --strict --verbose=4`, runs `spctl --assess --type execute --verbose=4` as diagnostic-only, and launches the signed app with no `FORMIC_SERVER_BUNDLE_DIR`.
+`CSC_NAME` is accepted as a fallback identity variable. The command packages the managed app with `FORMIC_ELECTRON_BUILDER_SIGNING_MODE=developer-id`, enables hardened runtime, and uses the tracked minimal Electron entitlements. electron-builder signs Electron-managed app/framework files while ignoring `Contents/Resources/formic-server`; the rehearsal script then signs only discovered Python runtime Mach-O files deepest-first, re-signs the outer `.app`, verifies with `codesign --verify --deep --strict --verbose=4`, runs `spctl --assess --type execute --verbose=4` as diagnostic-only, launches the signed app with no `FORMIC_SERVER_BUNDLE_DIR`, and verifies the code signature again after the launch smoke.
 
 The Python sidecar contains many data files, archives, and test fixtures. Those non-Mach-O files must not be signed; only Mach-O executables/libraries from the inventory are sent to `codesign`.
 
 If no Developer ID identity is configured, the Developer ID command intentionally runs the preflight and then fails with setup instructions. It never falls back to ad-hoc signing. This checkpoint still does not notarize, staple, create a DMG, or prove Gatekeeper acceptance.
+
+The packaged sidecar is launched with `PYTHONDONTWRITEBYTECODE=1` by default so Python does not create or update `__pycache__` files inside the signed `.app` resources tree. The signing and notarization rehearsals re-run `codesign --verify --deep --strict --verbose=4` after the smoke launch to catch any mutation that would invalidate the bundle signature.
 
 ## Notarization and Stapling Rehearsal
 
@@ -172,7 +174,7 @@ APPLE_API_ISSUER="00000000-0000-0000-0000-000000000000" \
 npm run desktop:resources:managed-notarization-check
 ```
 
-The command keeps all output under `build/desktop-rehearsal`. electron-builder notarization is explicitly disabled for this rehearsal so the script owns the notarization sequence. It packages the managed `.app`, signs it with Developer ID and hardened runtime, verifies `codesign --verify --deep --strict --verbose=4`, creates `build/desktop-rehearsal/notarization/Formic-notarization.zip` with `ditto --keepParent`, runs `xcrun notarytool submit --wait`, staples the accepted ticket to the `.app`, validates the staple, requires `spctl --assess --type execute --verbose=4` to pass, and launches the stapled app with no `FORMIC_SERVER_BUNDLE_DIR` while probing `/health`, `/ready`, and `/api/version`.
+The command keeps all output under `build/desktop-rehearsal`. electron-builder notarization is explicitly disabled for this rehearsal so the script owns the notarization sequence. It packages the managed `.app`, signs it with Developer ID and hardened runtime, verifies `codesign --verify --deep --strict --verbose=4`, creates `build/desktop-rehearsal/notarization/Formic-notarization.zip` with `ditto --keepParent`, runs `xcrun notarytool submit --wait`, staples the accepted ticket to the `.app`, validates the staple, requires `spctl --assess --type execute --verbose=4` to pass, launches the stapled app with no `FORMIC_SERVER_BUNDLE_DIR` while probing `/health`, `/ready`, and `/api/version`, then verifies the code signature again after launch.
 
 If notarization credentials are missing or incomplete, the command fails before packaging with setup instructions. The preflight and Developer ID signing-only commands do not read or require notarization credentials.
 

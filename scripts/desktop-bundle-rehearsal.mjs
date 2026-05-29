@@ -1155,6 +1155,10 @@ async function signPathWithDeveloperId(filePath, identity, entitlementsPath) {
   await run('codesign', args);
 }
 
+async function verifyCodesignedApp(appDir) {
+  await run('codesign', ['--verify', '--deep', '--strict', '--verbose=4', appDir]);
+}
+
 async function runSpctlDiagnostic(appDir) {
   const result = await runResult('spctl', ['--assess', '--type', 'execute', '--verbose=4', appDir]);
   const output = result.output.trim();
@@ -1193,7 +1197,7 @@ async function signManagedDeveloperIdApp(options, { runPreflight = true } = {}) 
   }
 
   await signPathWithDeveloperId(packagedApp.appDir, identity, mainEntitlementsPath);
-  await run('codesign', ['--verify', '--deep', '--strict', '--verbose=4', packagedApp.appDir]);
+  await verifyCodesignedApp(packagedApp.appDir);
 
   return { packagedApp, preflight, machOFiles };
 }
@@ -1206,6 +1210,7 @@ async function developerIdSignCheck(options) {
     managed: true,
     runtimeName: 'resources-managed-developer-id-sign-smoke'
   });
+  await verifyCodesignedApp(packagedApp.appDir);
   console.log('[formic-rehearsal] Developer ID signing check passed; notarization was not attempted.');
 
   return preflight;
@@ -1408,6 +1413,7 @@ async function notarizationCheck(options) {
     managed: true,
     runtimeName: 'resources-managed-notarization-smoke'
   });
+  await verifyCodesignedApp(packagedApp.appDir);
   console.log('[formic-rehearsal] Notarization/stapling check passed.');
 }
 

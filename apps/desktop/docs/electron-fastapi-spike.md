@@ -141,11 +141,13 @@ The Developer ID dry run is credential-gated:
 FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" npm run desktop:resources:managed-developer-id-sign-check
 ```
 
-`CSC_NAME` is accepted as a fallback identity variable. This command enables hardened runtime through `FORMIC_ELECTRON_BUILDER_SIGNING_MODE=developer-id`, uses the tracked minimal entitlements, and lets electron-builder sign Electron-managed app/framework files while ignoring `Contents/Resources/formic-server`. The rehearsal script signs only discovered Python runtime Mach-O files deepest-first, re-signs the outer `.app`, verifies with `codesign --verify --deep --strict --verbose=4`, runs diagnostic-only `spctl --assess --type execute --verbose=4`, then launches the signed app with no `FORMIC_SERVER_BUNDLE_DIR` and verifies `/health`, `/ready`, and `/api/version`.
+`CSC_NAME` is accepted as a fallback identity variable. This command enables hardened runtime through `FORMIC_ELECTRON_BUILDER_SIGNING_MODE=developer-id`, uses the tracked minimal entitlements, and lets electron-builder sign Electron-managed app/framework files while ignoring `Contents/Resources/formic-server`. The rehearsal script signs only discovered Python runtime Mach-O files deepest-first, re-signs the outer `.app`, verifies with `codesign --verify --deep --strict --verbose=4`, runs diagnostic-only `spctl --assess --type execute --verbose=4`, launches the signed app with no `FORMIC_SERVER_BUNDLE_DIR`, verifies `/health`, `/ready`, and `/api/version`, and verifies the code signature again after launch.
 
 Non-Mach-O Python sidecar resources such as compressed datasets and JSON fixtures are intentionally excluded from signing.
 
 If no Developer ID Application identity is configured, the command runs preflight and fails with setup instructions. It does not fall back to ad-hoc signing and does not attempt notarization.
+
+The packaged sidecar defaults `PYTHONDONTWRITEBYTECODE=1` so Python does not write `__pycache__` files into the signed `.app` resources tree during launch. The Developer ID and notarization rehearsals verify codesigning again after the smoke launch to prove the sidecar did not mutate the signed bundle.
 
 ## Notarization and Stapling Rehearsal
 
@@ -169,7 +171,7 @@ APPLE_API_ISSUER="00000000-0000-0000-0000-000000000000" \
 npm run desktop:resources:managed-notarization-check
 ```
 
-The command keeps the rehearsal scoped to `build/desktop-rehearsal`. electron-builder notarization is explicitly disabled for this rehearsal so the script owns the notarization sequence: it packages the managed `.app`, signs with Developer ID and hardened runtime, verifies codesigning, creates `build/desktop-rehearsal/notarization/Formic-notarization.zip` with `ditto --keepParent`, submits with `xcrun notarytool submit --wait`, staples the accepted ticket, validates stapling, requires `spctl --assess --type execute --verbose=4` to pass, and launches the stapled app with no `FORMIC_SERVER_BUNDLE_DIR` while checking `/health`, `/ready`, and `/api/version`.
+The command keeps the rehearsal scoped to `build/desktop-rehearsal`. electron-builder notarization is explicitly disabled for this rehearsal so the script owns the notarization sequence: it packages the managed `.app`, signs with Developer ID and hardened runtime, verifies codesigning, creates `build/desktop-rehearsal/notarization/Formic-notarization.zip` with `ditto --keepParent`, submits with `xcrun notarytool submit --wait`, staples the accepted ticket, validates stapling, requires `spctl --assess --type execute --verbose=4` to pass, launches the stapled app with no `FORMIC_SERVER_BUNDLE_DIR` while checking `/health`, `/ready`, and `/api/version`, then verifies the code signature again after launch.
 
 If notarization credentials are missing or incomplete, the notarization command fails up front with setup instructions. The preflight and Developer ID signing-only commands remain free of notarization credential requirements.
 

@@ -447,6 +447,7 @@ function spawnServer(): void {
       FORMIC_LAZY_EMBEDDINGS: process.env.FORMIC_LAZY_EMBEDDINGS ?? 'true',
       FORWARDED_ALLOW_IPS: '*',
       PORT: String(serverPort),
+      PYTHONDONTWRITEBYTECODE: process.env.PYTHONDONTWRITEBYTECODE ?? '1',
       PYTHONPATH: launchPlan.backendDir,
       STATIC_DIR: process.env.STATIC_DIR ?? path.join(app.getPath('userData'), 'backend-static'),
       WEBUI_URL: serverUrl
