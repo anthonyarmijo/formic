@@ -72,6 +72,24 @@ npm run desktop:resources:package
 
 The electron-builder config is `electron-builder.desktop.cjs`. It keeps app code in `app.asar` while copying `formic-server/` as `extraResources`, so Python, backend files, lock/context files, and `.venv/` remain directly executable under `Contents/Resources/formic-server`.
 
+## Python Artifact Audit
+
+The signed-app Python strategy now has a repeatable audit command:
+
+```sh
+npm run desktop:bundle:audit
+```
+
+It inspects the existing rehearsal `formic-server/.venv` for symlinks, absolute paths, console-script shebangs, executable files, and native `.so`/`.dylib` payloads. On the macOS arm64 rehearsal bundle it reports that `.venv/bin/python` resolves to the local uv-managed CPython under the user home, outside `formic-server`, and that generated console scripts contain absolute shebangs back to the original build path.
+
+A relocation stress command now copies the server bundle to a second path with spaces and launches Electron against that relocated copy:
+
+```sh
+npm run desktop:bundle:relocation-smoke -- --clean
+```
+
+That smoke passes on this machine and verifies `/health`, `/ready`, and `/api/version`, but the audit explains why the pass is not enough for distribution: the interpreter is still the local uv-managed runtime, not an interpreter shipped inside the `.app`.
+
 ## Decision Notes
 
 - The Electron shell can check for an already-running backend before spawning its own process.
@@ -97,11 +115,13 @@ The electron-builder config is `electron-builder.desktop.cjs`. It keeps app code
 - `npm run desktop:bundle:build` now produces the disposable `formic-server` root under `build/desktop-rehearsal/`.
 - `npm run desktop:bundle:smoke` is the concrete proof for this spike: Electron launches the bundle-local `.venv` server and the backend responds on `/health`, `/ready`, and `/api/version`.
 - `npm run desktop:resources:smoke` now proves the same API sidecar works from the packaged app resources path with no `FORMIC_SERVER_BUNDLE_DIR`.
+- `npm run desktop:bundle:audit` now reports the copied `.venv` as a local rehearsal artifact, not a shippable Python payload: Python resolves outside the bundle, console scripts contain absolute build-path shebangs, and hundreds of native libraries remain to be signed.
+- `npm run desktop:bundle:relocation-smoke -- --clean` now proves launcher path handling from a copied bundle path with spaces.
 
 ## Current Packaging Read
 
-Recommended path: keep pursuing a bundled Python/venv sidecar as the Phase 0 default because the current app shape already needs a local FastAPI process for desktop parity. The rehearsal now proves the smallest useful server payload: a `formic-server` directory with the current `backend/`, dependency lock/context, and a prebuilt `.venv`, launched through `FORMIC_SERVER_BUNDLE_DIR`.
+Recommended path: keep pursuing a bundled Python sidecar as the Phase 0 default because the current app shape already needs a local FastAPI process for desktop parity. Keep the `formic-server` layout and Electron launcher, but switch the final artifact strategy away from a raw copied uv-created `.venv` toward a platform-specific payload with an in-bundle managed Python runtime and locked dependencies installed against that runtime.
 
 Fallback path: keep `FORMIC_SERVER_MODE=external` for Docker or a user-managed server. Do not make this the primary desktop story unless the bundled-venv rehearsal fails on clean machines.
 
-Remaining blocker for a real packaged `.app`: the local `.venv` relocated into `Contents/Resources/formic-server` on this machine, but this still does not solve codesign/notarization of Python binaries, cross-machine reproducibility, installer layout, updater behavior, or how model/cache data is shipped versus initialized at first run. The next packaging decision should be the signed-app Python artifact strategy before `.dmg` polish.
+Remaining blocker for a real packaged `.app`: build a self-contained macOS arm64 server payload with Python inside `Contents/Resources/formic-server`, then run recursive local signing verification before attempting Developer ID signing/notarization. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough.

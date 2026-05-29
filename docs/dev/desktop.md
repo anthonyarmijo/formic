@@ -102,6 +102,33 @@ Useful overrides:
 
 The electron-builder config for this rehearsal is `electron-builder.desktop.cjs`. It keeps the Electron app code in `app.asar`, but stages Python, backend files, lock/context files, and `.venv/` as explicit `extraResources` under `resources/formic-server`, where the sidecar launcher can execute them directly.
 
+## Python Artifact Audit
+
+The signed-app Python decision is now captured by a repeatable, non-destructive audit against the existing rehearsal bundle:
+
+```sh
+npm run desktop:bundle:audit
+```
+
+The audit validates the bundle shape, walks `.venv/`, and reports size, symlinks, absolute text references, console-script shebangs, executable files, and native `.so`/`.dylib` payloads that will matter for relocation and Developer ID signing. It does not mutate files or attempt signing/notarization.
+
+Current result on the macOS arm64 rehearsal bundle:
+
+- `.venv/bin/python` resolves outside the bundle to the uv-managed CPython under the local user home.
+- The copied `.venv` contains absolute console-script shebangs back to the original build path.
+- The venv is roughly 1.3-1.5 GB and contains hundreds of native extension/library files that will need recursive signing in a real `.app`.
+- The API sidecar still works because Electron launches `python -m uvicorn` and this machine has the external uv-managed interpreter available.
+
+That means the copied uv-created `.venv` is useful as a Phase 0 rehearsal input, but it is not by itself a shippable signed Python artifact.
+
+A relocation stress rehearsal exercises the same bundle from a second path containing spaces:
+
+```sh
+npm run desktop:bundle:relocation-smoke -- --clean
+```
+
+The command builds the server bundle, copies it under `build/desktop-rehearsal/relocation path with spaces/formic-server`, audits the relocated copy, launches Electron with that relocated `FORMIC_SERVER_BUNDLE_DIR`, and verifies `/health`, `/ready`, and `/api/version`. Passing this test proves the current launcher path handling is sound on this machine; it does not prove the copied `.venv` will run on a clean Mac because the Python executable still resolves outside the bundle.
+
 ## Current Reliability Notes
 
 Works:
@@ -113,13 +140,15 @@ Works:
 - `npm run desktop:bundle:build` creates a repeatable disposable `formic-server` root with backend files, lock/context, and `.venv`.
 - `npm run desktop:bundle:smoke` verifies Electron can launch the bundle-local venv server and serve `/health`, `/ready`, and `/api/version`.
 - `npm run desktop:resources:smoke` verifies the unsigned packaged `.app` launches from `Contents/Resources/formic-server` with no `FORMIC_SERVER_BUNDLE_DIR`.
+- `npm run desktop:bundle:audit` makes `.venv` relocation/signing risks visible without mutating the rehearsal output.
+- `npm run desktop:bundle:relocation-smoke -- --clean` verifies Electron can launch the sidecar from a copied bundle path with spaces.
 
 Still flaky:
 
 - First-run local backend startup can still be slow when dependency/model caches are cold.
-- The packaged resources rehearsal uses the current machine's uv-created `.venv`; it relocated successfully into the local `.app` resources path on this machine, but a real `.app` must decide how to build, sign, relocate, and update that Python environment per platform.
+- The packaged resources rehearsal uses the current machine's uv-created `.venv`; it relocated successfully into the local `.app` resources path and a second path with spaces on this machine, but the audit shows the Python executable is still an absolute symlink to the local uv-managed runtime outside the bundle.
 - The smoke command verifies the API sidecar path with an `about:blank` renderer URL. It does not prove the full packaged renderer, installer, updater, signing, or notarization path.
 - electron-builder warns that arm64 macOS normally requires signing; this rehearsal intentionally skips signing with `identity: null`.
 - Packaged builds still need signing, notarization, and a final decision on whether the Docker/external fallback becomes user-facing.
 
-Recommended next Phase 0 step: decide the signed `.app` Python strategy: whether to keep a uv-created `.venv` as `extraResources`, switch to a smaller managed Python payload, or produce a platform-specific server artifact that can survive codesign/notarization before any `.dmg` polish.
+Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, but stop treating a copied uv-created `.venv` as the final artifact. The next proof should build a platform-specific server payload with an in-bundle Python runtime, then recreate/install the locked dependencies against that runtime before recursive signing. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.

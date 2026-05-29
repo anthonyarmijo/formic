@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, readdir, readFile, readlink, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,6 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const defaultBundleDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'formic-server');
 const defaultPackageDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'packaged-app');
+const defaultRelocationDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'relocation path with spaces');
 const defaultRuntimeDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'runtime-data');
 const defaultPort = 18080;
 const defaultTimeoutMs = 180000;
@@ -40,6 +41,7 @@ function parseArgs(argv) {
     command: 'build',
     bundleDir: process.env.FORMIC_REHEARSAL_BUNDLE_DIR || defaultBundleDir,
     packageDir: process.env.FORMIC_REHEARSAL_PACKAGE_DIR || defaultPackageDir,
+    relocationDir: process.env.FORMIC_REHEARSAL_RELOCATION_DIR || defaultRelocationDir,
     port: Number(process.env.FORMIC_REHEARSAL_SERVER_PORT || defaultPort),
     timeoutMs: Number(process.env.FORMIC_REHEARSAL_TIMEOUT_MS || defaultTimeoutMs),
     clean: false,
@@ -82,12 +84,18 @@ function parseArgs(argv) {
         throw new Error('--package-dir requires a path');
       }
       options.packageDir = path.resolve(repoRoot, value);
+    } else if (arg === '--relocation-dir') {
+      const value = args.shift();
+      if (!value) {
+        throw new Error('--relocation-dir requires a path');
+      }
+      options.relocationDir = path.resolve(repoRoot, value);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
   }
 
-  if (!['build', 'smoke', 'resources-package', 'resources-smoke', 'print-path'].includes(options.command)) {
+  if (!['build', 'smoke', 'resources-package', 'resources-smoke', 'audit', 'relocation-smoke', 'print-path'].includes(options.command)) {
     throw new Error(`Unknown command: ${options.command}`);
   }
 
@@ -104,12 +112,43 @@ function pythonPathForBundle(bundleDir) {
     : path.join(bundleDir, '.venv', 'bin', 'python');
 }
 
+function formatBytes(bytes) {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
 async function pathExists(value) {
   try {
     await stat(value);
     return true;
   } catch {
     return false;
+  }
+}
+
+async function realPath(value) {
+  return import('node:fs/promises').then(({ realpath }) => realpath(value));
+}
+
+async function walkFiles(root, visitor) {
+  const entries = await readdir(root, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    const entryStat = await lstat(fullPath);
+    await visitor(fullPath, entryStat);
+
+    if (entryStat.isDirectory() && !entryStat.isSymbolicLink()) {
+      await walkFiles(fullPath, visitor);
+    }
   }
 }
 
@@ -268,6 +307,204 @@ async function buildBundle(options) {
   await writeManifest(bundleDir, backendFileCount);
   console.log(`[formic-rehearsal] Bundle ready: ${displayPath(bundleDir)}`);
   return bundleDir;
+}
+
+function isInsidePath(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function isLikelyNativeFile(filePath) {
+  return ['.so', '.dylib', '.pyd', '.dll'].some((suffix) => filePath.endsWith(suffix));
+}
+
+function isLikelyTextFile(filePath) {
+  const basename = path.basename(filePath);
+  const extension = path.extname(filePath);
+
+  return (
+    basename === 'pyvenv.cfg' ||
+    basename === 'RECORD' ||
+    basename === 'entry_points.txt' ||
+    basename === 'direct_url.json' ||
+    extension === '.pth' ||
+    extension === '.cfg' ||
+    extension === '.txt' ||
+    extension === '.json' ||
+    extension === '.toml' ||
+    filePath.includes(`${path.sep}.venv${path.sep}bin${path.sep}`)
+  );
+}
+
+function pushSample(list, value, limit = 12) {
+  if (list.length < limit) {
+    list.push(value);
+  }
+}
+
+async function auditBundle(options) {
+  const bundleDir = path.resolve(options.bundleDir);
+  await validateBundle(bundleDir);
+
+  const venvDir = path.join(bundleDir, '.venv');
+  const venvStat = await stat(venvDir);
+  const audit = {
+    bundleDir,
+    python: pythonPathForBundle(bundleDir),
+    pythonRealPath: null,
+    fileCount: 0,
+    directoryCount: 1,
+    symlinkCount: 0,
+    brokenSymlinkCount: 0,
+    absoluteSymlinkCount: 0,
+    externalSymlinkCount: 0,
+    executableFileCount: 0,
+    nativeFileCount: 0,
+    totalBytes: venvStat.size,
+    absoluteReferenceCount: 0,
+    absoluteShebangCount: 0,
+    bundlePathReferenceCount: 0,
+    repoPathReferenceCount: 0,
+    samples: {
+      externalSymlinks: [],
+      absoluteShebangs: [],
+      absoluteReferences: [],
+      nativeFiles: []
+    }
+  };
+
+  try {
+    audit.pythonRealPath = await realPath(audit.python);
+  } catch {
+    audit.pythonRealPath = null;
+  }
+
+  await walkFiles(venvDir, async (filePath, entryStat) => {
+    const relative = path.relative(bundleDir, filePath);
+    audit.totalBytes += entryStat.size;
+
+    if (entryStat.isDirectory()) {
+      audit.directoryCount += 1;
+      return;
+    }
+
+    if (entryStat.isSymbolicLink()) {
+      audit.symlinkCount += 1;
+      const target = await readlink(filePath);
+      const resolvedTarget = path.isAbsolute(target) ? target : path.resolve(path.dirname(filePath), target);
+      const isExternal = !isInsidePath(resolvedTarget, bundleDir);
+
+      if (path.isAbsolute(target)) {
+        audit.absoluteSymlinkCount += 1;
+      }
+
+      if (isExternal) {
+        audit.externalSymlinkCount += 1;
+        pushSample(audit.samples.externalSymlinks, `${relative} -> ${target}`);
+      }
+
+      if (!(await pathExists(resolvedTarget))) {
+        audit.brokenSymlinkCount += 1;
+      }
+
+      return;
+    }
+
+    audit.fileCount += 1;
+
+    if ((entryStat.mode & 0o111) !== 0) {
+      audit.executableFileCount += 1;
+    }
+
+    if (isLikelyNativeFile(filePath)) {
+      audit.nativeFileCount += 1;
+      pushSample(audit.samples.nativeFiles, relative);
+    }
+
+    if (!isLikelyTextFile(filePath) || entryStat.size > 1024 * 1024) {
+      return;
+    }
+
+    let text = '';
+    try {
+      text = await readFile(filePath, 'utf8');
+    } catch {
+      return;
+    }
+
+    const firstLine = text.split(/\r?\n/, 1)[0] ?? '';
+    if (firstLine.startsWith('#!/')) {
+      const shebangTarget = firstLine.slice(2).split(/\s+/, 1)[0];
+      if (path.isAbsolute(shebangTarget)) {
+        audit.absoluteShebangCount += 1;
+        pushSample(audit.samples.absoluteShebangs, `${relative}: ${firstLine}`);
+      }
+    }
+
+    const absoluteMatches = [...text.matchAll(/(?:\/Users|\/private|\/opt|\/usr\/local|\/var\/folders)\/[^\s"')\]}]+/g)];
+
+    if (absoluteMatches.length > 0) {
+      audit.absoluteReferenceCount += absoluteMatches.length;
+      pushSample(audit.samples.absoluteReferences, `${relative}: ${absoluteMatches[0][0]}`);
+    }
+
+    if (text.includes(bundleDir)) {
+      audit.bundlePathReferenceCount += 1;
+    }
+
+    if (text.includes(repoRoot)) {
+      audit.repoPathReferenceCount += 1;
+    }
+  });
+
+  const risks = [];
+  if (audit.pythonRealPath && !isInsidePath(audit.pythonRealPath, bundleDir)) {
+    risks.push(`Python executable resolves outside the bundle: ${audit.pythonRealPath}`);
+  }
+  if (audit.externalSymlinkCount > 0) {
+    risks.push(`${audit.externalSymlinkCount} symlink(s) resolve outside the bundle.`);
+  }
+  if (audit.absoluteShebangCount > 0) {
+    risks.push(`${audit.absoluteShebangCount} console script shebang(s) contain absolute paths.`);
+  }
+  if (audit.nativeFileCount > 0 && process.platform === 'darwin') {
+    risks.push(`${audit.nativeFileCount} native library file(s) will need recursive Developer ID signing.`);
+  }
+  if (audit.totalBytes > 1024 * 1024 * 1024) {
+    risks.push(`The copied .venv is large (${formatBytes(audit.totalBytes)}), before installer compression or pruning.`);
+  }
+
+  console.log(`[formic-rehearsal] Bundle audit: ${displayPath(bundleDir)}`);
+  console.log(`[formic-rehearsal] Python: ${path.relative(bundleDir, audit.python)}`);
+  console.log(`[formic-rehearsal] Python real path: ${audit.pythonRealPath ?? 'unresolved'}`);
+  console.log(`[formic-rehearsal] .venv: ${formatBytes(audit.totalBytes)}, ${audit.fileCount} files, ${audit.directoryCount} directories`);
+  console.log(`[formic-rehearsal] Symlinks: ${audit.symlinkCount} total, ${audit.absoluteSymlinkCount} absolute, ${audit.externalSymlinkCount} external, ${audit.brokenSymlinkCount} broken`);
+  console.log(`[formic-rehearsal] Executables/native: ${audit.executableFileCount} executable files, ${audit.nativeFileCount} native library files`);
+  console.log(
+    `[formic-rehearsal] Absolute text refs: ${audit.absoluteReferenceCount} matches, ${audit.absoluteShebangCount} shebangs, ${audit.bundlePathReferenceCount} files mention this bundle path`
+  );
+
+  for (const [label, values] of Object.entries(audit.samples)) {
+    if (values.length === 0) {
+      continue;
+    }
+
+    console.log(`[formic-rehearsal] Sample ${label}:`);
+    for (const value of values) {
+      console.log(`  - ${value}`);
+    }
+  }
+
+  if (risks.length > 0) {
+    console.log('[formic-rehearsal] Signing/distribution risks found:');
+    for (const risk of risks) {
+      console.log(`  - ${risk}`);
+    }
+  } else {
+    console.log('[formic-rehearsal] No obvious relocation/signing risks found in the copied .venv.');
+  }
+
+  return audit;
 }
 
 async function probeJson(url, options = {}) {
@@ -534,8 +771,8 @@ async function smokePackagedResources(options) {
   }
 }
 
-async function smokeBundle(options) {
-  const bundleDir = await buildBundle(options);
+async function smokeBundle(options, bundleOverride = null, runtimeName = `smoke-${options.port}`) {
+  const bundleDir = bundleOverride ?? (await buildBundle(options));
   await run('npm', ['run', 'build', '--workspace', '@formic/desktop']);
   await ensurePortAvailable(options.port);
 
@@ -543,7 +780,7 @@ async function smokeBundle(options) {
   const customRuntimeRoot = Boolean(process.env.FORMIC_REHEARSAL_RUNTIME_DIR);
   const runtimeRoot = customRuntimeRoot
     ? path.resolve(repoRoot, process.env.FORMIC_REHEARSAL_RUNTIME_DIR)
-    : path.join(defaultRuntimeDir, `smoke-${options.port}`);
+    : path.join(defaultRuntimeDir, runtimeName);
   const runtimeDataDir = path.join(runtimeRoot, 'data');
   const runtimeStaticDir = path.join(runtimeRoot, 'backend-static');
 
@@ -616,6 +853,26 @@ async function smokeBundle(options) {
   }
 }
 
+async function smokeRelocatedBundle(options) {
+  const sourceBundleDir = await buildBundle(options);
+  const relocationRoot = path.resolve(options.relocationDir);
+  const relocatedBundleDir = path.join(relocationRoot, 'formic-server');
+
+  await rm(relocationRoot, { recursive: true, force: true });
+  await mkdir(relocationRoot, { recursive: true });
+  await cp(sourceBundleDir, relocatedBundleDir, {
+    recursive: true,
+    dereference: false,
+    verbatimSymlinks: true
+  });
+
+  await validateBundle(relocatedBundleDir);
+  console.log(`[formic-rehearsal] Relocated bundle copy: ${displayPath(relocatedBundleDir)}`);
+  await auditBundle({ ...options, bundleDir: relocatedBundleDir });
+  await smokeBundle({ ...options, bundleDir: relocatedBundleDir, clean: false, skipSync: true }, relocatedBundleDir, `relocation-smoke-${options.port}`);
+  console.log('[formic-rehearsal] Relocation smoke passed from a path containing spaces.');
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
 
@@ -629,6 +886,11 @@ async function main() {
     return;
   }
 
+  if (options.command === 'audit') {
+    await auditBundle(options);
+    return;
+  }
+
   if (options.command === 'resources-package') {
     await packageResourcesApp(options);
     return;
@@ -636,6 +898,11 @@ async function main() {
 
   if (options.command === 'resources-smoke') {
     await smokePackagedResources(options);
+    return;
+  }
+
+  if (options.command === 'relocation-smoke') {
+    await smokeRelocatedBundle(options);
     return;
   }
 
