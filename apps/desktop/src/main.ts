@@ -22,6 +22,7 @@ type ServerLaunchPlan = {
   cwd: string;
   backendDir: string;
   source: string;
+  error?: string;
 };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -81,7 +82,8 @@ function escapeHtml(value: string): string {
 
 function originFor(value: string): string | null {
   try {
-    return new URL(value).origin;
+    const origin = new URL(value).origin;
+    return origin === 'null' ? null : origin;
   } catch {
     return null;
   }
@@ -112,6 +114,33 @@ function findBundledPython(root: string): string | null {
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
+function bundledPythonCandidates(root: string): string[] {
+  return process.platform === 'win32'
+    ? [path.join(root, '.venv', 'Scripts', 'python.exe'), path.join(root, 'venv', 'Scripts', 'python.exe')]
+    : [path.join(root, '.venv', 'bin', 'python'), path.join(root, 'venv', 'bin', 'python')];
+}
+
+function missingServerRootFiles(root: string, backendDir: string): string[] {
+  const required: Array<[string, string]> = [
+    ['backend directory', backendDir],
+    ['FastAPI app', path.join(backendDir, 'open_webui', 'main.py')],
+    ['backend env module', path.join(backendDir, 'open_webui', 'env.py')]
+  ];
+
+  if (shouldUseBundledServerRoot) {
+    required.push(
+      ['dependency project file', path.join(root, 'pyproject.toml')],
+      ['dependency lockfile', path.join(root, 'uv.lock')],
+      ['package metadata', path.join(root, 'package.json')],
+      ['changelog', path.join(root, 'CHANGELOG.md')]
+    );
+  }
+
+  return required
+    .filter(([, filePath]) => !existsSync(filePath))
+    .map(([label, filePath]) => `${label}: ${filePath}`);
+}
+
 function buildServerLaunchPlan(): ServerLaunchPlan {
   const backendDir = path.join(serverRoot, 'backend');
   const python = process.env.FORMIC_PYTHON;
@@ -135,6 +164,21 @@ function buildServerLaunchPlan(): ServerLaunchPlan {
       cwd: serverRoot,
       backendDir,
       source: process.env.FORMIC_SERVER_BUNDLE_DIR ? 'FORMIC_SERVER_BUNDLE_DIR venv' : 'bundled venv'
+    };
+  }
+
+  if (shouldUseBundledServerRoot) {
+    return {
+      command: '',
+      args: [],
+      cwd: serverRoot,
+      backendDir,
+      source: 'missing bundled Python',
+      error: [
+        `Bundled server root was selected at ${serverRoot}, but no bundled Python executable was found.`,
+        `Expected one of:\n${bundledPythonCandidates(serverRoot).map((candidate) => `- ${candidate}`).join('\n')}`,
+        'Run `npm run desktop:bundle:build` to create a rehearsal bundle with a .venv, or set FORMIC_PYTHON explicitly for local debugging.'
+      ].join('\n')
     };
   }
 
@@ -343,9 +387,16 @@ function spawnServer(): void {
   activeServerLaunchPlan = launchPlan;
   recentServerOutput.length = 0;
 
-  if (!existsSync(launchPlan.backendDir)) {
+  const missingFiles = missingServerRootFiles(launchPlan.cwd, launchPlan.backendDir);
+  if (missingFiles.length) {
     serverStatus = 'failed';
-    lastServerError = `Backend directory does not exist: ${launchPlan.backendDir}`;
+    lastServerError = `Server root is missing required files:\n${missingFiles.map((item) => `- ${item}`).join('\n')}`;
+    return;
+  }
+
+  if (launchPlan.error) {
+    serverStatus = 'failed';
+    lastServerError = launchPlan.error;
     return;
   }
 
