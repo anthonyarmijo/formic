@@ -174,6 +174,18 @@ APPLE_API_ISSUER="00000000-0000-0000-0000-000000000000" \
 npm run desktop:resources:managed-notarization-check
 ```
 
+The dry run can also use a stored `notarytool` keychain profile:
+
+```sh
+xcrun notarytool store-credentials formic-notary
+
+FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" \
+APPLE_NOTARY_KEYCHAIN_PROFILE="formic-notary" \
+npm run desktop:resources:managed-notarization-check
+```
+
+`NOTARYTOOL_KEYCHAIN_PROFILE` and `APPLE_NOTARY_PROFILE` are accepted aliases for the profile name.
+
 The command keeps all output under `build/desktop-rehearsal`. electron-builder notarization is explicitly disabled for this rehearsal so the script owns the notarization sequence. It packages the managed `.app`, signs it with Developer ID and hardened runtime, verifies `codesign --verify --deep --strict --verbose=4`, creates `build/desktop-rehearsal/notarization/Formic-notarization.zip` with `ditto --keepParent`, runs `xcrun notarytool submit --wait`, staples the accepted ticket to the `.app`, validates the staple, requires `spctl --assess --type execute --verbose=4` to pass, launches the stapled app with no `FORMIC_SERVER_BUNDLE_DIR` while probing `/health`, `/ready`, and `/api/version`, then verifies the code signature again after launch.
 
 If notarization credentials are missing or incomplete, the command fails before packaging with setup instructions. The preflight and Developer ID signing-only commands do not read or require notarization credentials.

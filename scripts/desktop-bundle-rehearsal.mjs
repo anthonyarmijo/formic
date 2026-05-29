@@ -1217,6 +1217,19 @@ async function developerIdSignCheck(options) {
 }
 
 function notarizationCredentialArgsFromEnv() {
+  const keychainProfile =
+    process.env.APPLE_NOTARY_KEYCHAIN_PROFILE ||
+    process.env.NOTARYTOOL_KEYCHAIN_PROFILE ||
+    process.env.APPLE_NOTARY_PROFILE ||
+    '';
+
+  if (keychainProfile) {
+    return {
+      mode: 'notarytool keychain profile',
+      args: ['--keychain-profile', keychainProfile]
+    };
+  }
+
   const appleId = process.env.APPLE_ID || '';
   const appSpecificPassword = process.env.APPLE_APP_SPECIFIC_PASSWORD || '';
   const appleTeamId = process.env.APPLE_TEAM_ID || '';
@@ -1295,6 +1308,10 @@ function assertNotarizationCredentials() {
       '  APPLE_API_KEY="/path/to/AuthKey_ABC123DEFG.p8" \\',
       '  APPLE_API_KEY_ID="ABC123DEFG" \\',
       '  APPLE_API_ISSUER="00000000-0000-0000-0000-000000000000" \\',
+      '  npm run desktop:resources:managed-notarization-check',
+      'Or use a notarytool keychain profile created with xcrun notarytool store-credentials:',
+      '  FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" \\',
+      '  APPLE_NOTARY_KEYCHAIN_PROFILE="formic-notary" \\',
       '  npm run desktop:resources:managed-notarization-check',
       'The signing preflight and Developer ID signing-only commands do not require these notarization variables.'
     ].join('\n')
