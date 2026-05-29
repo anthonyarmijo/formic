@@ -70,6 +70,38 @@ When `FORMIC_SERVER_BUNDLE_DIR` or the packaged `resources/formic-server` path i
 
 `npm run dev:renderer` remains the standalone web renderer loop. It uses the same strict `127.0.0.1:5173` target so Electron and browser-based web development exercise the same renderer endpoint.
 
+## Packaged Resources Rehearsal
+
+The packaged-app resources rehearsal builds on the same `formic-server` shape, then asks electron-builder to create an unsigned local `.app` directory with that server copied outside `app.asar`:
+
+```sh
+npm run desktop:resources:smoke
+```
+
+The command:
+
+- builds or refreshes `build/desktop-rehearsal/formic-server`.
+- builds `@formic/desktop`.
+- packages an unsigned directory target at `build/desktop-rehearsal/packaged-app/mac-arm64/Formic.app`.
+- copies the server payload to `Formic.app/Contents/Resources/formic-server`.
+- launches the packaged app without `FORMIC_SERVER_BUNDLE_DIR`.
+- verifies Electron selects `process.resourcesPath/formic-server`, starts its `.venv` Python, and serves `/health`, `/ready`, and `/api/version`.
+
+To only create the local packaged layout without launching it:
+
+```sh
+npm run desktop:resources:package
+```
+
+Useful overrides:
+
+- `FORMIC_REHEARSAL_PACKAGE_DIR=/path/to/packaged-output`
+- `FORMIC_REHEARSAL_BUNDLE_DIR=/path/to/formic-server`
+- `FORMIC_REHEARSAL_SERVER_PORT=18081`
+- `FORMIC_REHEARSAL_TIMEOUT_MS=240000`
+
+The electron-builder config for this rehearsal is `electron-builder.desktop.cjs`. It keeps the Electron app code in `app.asar`, but stages Python, backend files, lock/context files, and `.venv/` as explicit `extraResources` under `resources/formic-server`, where the sidecar launcher can execute them directly.
+
 ## Current Reliability Notes
 
 Works:
@@ -80,13 +112,14 @@ Works:
 - Startup failures now show the launch command, server root, backend path, and recent sidecar output.
 - `npm run desktop:bundle:build` creates a repeatable disposable `formic-server` root with backend files, lock/context, and `.venv`.
 - `npm run desktop:bundle:smoke` verifies Electron can launch the bundle-local venv server and serve `/health`, `/ready`, and `/api/version`.
+- `npm run desktop:resources:smoke` verifies the unsigned packaged `.app` launches from `Contents/Resources/formic-server` with no `FORMIC_SERVER_BUNDLE_DIR`.
 
 Still flaky:
 
-- There is still no packaged `.app` recipe that copies the rehearsed `formic-server` directory into `resources/formic-server`.
 - First-run local backend startup can still be slow when dependency/model caches are cold.
-- The rehearsal uses the current machine's uv-created `.venv`; a real `.app` must decide how to build, sign, relocate, and update that Python environment per platform.
+- The packaged resources rehearsal uses the current machine's uv-created `.venv`; it relocated successfully into the local `.app` resources path on this machine, but a real `.app` must decide how to build, sign, relocate, and update that Python environment per platform.
 - The smoke command verifies the API sidecar path with an `about:blank` renderer URL. It does not prove the full packaged renderer, installer, updater, signing, or notarization path.
+- electron-builder warns that arm64 macOS normally requires signing; this rehearsal intentionally skips signing with `identity: null`.
 - Packaged builds still need signing, notarization, and a final decision on whether the Docker/external fallback becomes user-facing.
 
-Recommended next Phase 0 step: add the first electron-builder resources recipe that copies the rehearsed `formic-server` shape into `resources/formic-server`, then run the same smoke checks from the packaged app layout before committing to signed `.dmg` distribution.
+Recommended next Phase 0 step: decide the signed `.app` Python strategy: whether to keep a uv-created `.venv` as `extraResources`, switch to a smaller managed Python payload, or produce a platform-specific server artifact that can survive codesign/notarization before any `.dmg` polish.

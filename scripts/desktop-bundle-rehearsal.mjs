@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const defaultBundleDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'formic-server');
+const defaultPackageDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'packaged-app');
 const defaultRuntimeDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'runtime-data');
 const defaultPort = 18080;
 const defaultTimeoutMs = 180000;
@@ -38,6 +39,7 @@ function parseArgs(argv) {
   const options = {
     command: 'build',
     bundleDir: process.env.FORMIC_REHEARSAL_BUNDLE_DIR || defaultBundleDir,
+    packageDir: process.env.FORMIC_REHEARSAL_PACKAGE_DIR || defaultPackageDir,
     port: Number(process.env.FORMIC_REHEARSAL_SERVER_PORT || defaultPort),
     timeoutMs: Number(process.env.FORMIC_REHEARSAL_TIMEOUT_MS || defaultTimeoutMs),
     clean: false,
@@ -74,12 +76,18 @@ function parseArgs(argv) {
       options.clean = true;
     } else if (arg === '--skip-sync') {
       options.skipSync = true;
+    } else if (arg === '--package-dir') {
+      const value = args.shift();
+      if (!value) {
+        throw new Error('--package-dir requires a path');
+      }
+      options.packageDir = path.resolve(repoRoot, value);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
   }
 
-  if (!['build', 'smoke', 'print-path'].includes(options.command)) {
+  if (!['build', 'smoke', 'resources-package', 'resources-smoke', 'print-path'].includes(options.command)) {
     throw new Error(`Unknown command: ${options.command}`);
   }
 
@@ -324,6 +332,91 @@ function localElectronBinary() {
   return path.join(repoRoot, 'node_modules', '.bin', binary);
 }
 
+function electronBuilderBinary() {
+  const binary = process.platform === 'win32' ? 'electron-builder.cmd' : 'electron-builder';
+  return path.join(repoRoot, 'node_modules', '.bin', binary);
+}
+
+async function findDirectoriesBySuffix(root, suffix, maxDepth = 4) {
+  const matches = [];
+
+  async function visit(current, depth) {
+    if (depth > maxDepth || !(await pathExists(current))) {
+      return;
+    }
+
+    const entries = await readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const fullPath = path.join(current, entry.name);
+      if (entry.name.endsWith(suffix)) {
+        matches.push(fullPath);
+        continue;
+      }
+
+      await visit(fullPath, depth + 1);
+    }
+  }
+
+  await visit(root, 0);
+  return matches;
+}
+
+async function findPackagedApp(packageDir) {
+  if (process.platform !== 'darwin') {
+    throw new Error('The packaged resources rehearsal currently expects a macOS .app directory.');
+  }
+
+  const apps = await findDirectoriesBySuffix(packageDir, '.app');
+  if (apps.length !== 1) {
+    throw new Error(`Expected exactly one packaged .app under ${displayPath(packageDir)}, found ${apps.length}.`);
+  }
+
+  const appDir = apps[0];
+  const macOsDir = path.join(appDir, 'Contents', 'MacOS');
+  const executables = (await readdir(macOsDir, { withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.join(macOsDir, entry.name));
+
+  if (executables.length === 0) {
+    throw new Error(`No packaged app executable found under ${macOsDir}.`);
+  }
+
+  return {
+    appDir,
+    executable: executables[0],
+    resourcesDir: path.join(appDir, 'Contents', 'Resources'),
+    serverDir: path.join(appDir, 'Contents', 'Resources', 'formic-server')
+  };
+}
+
+async function packageResourcesApp(options) {
+  const bundleDir = await buildBundle(options);
+  await run('npm', ['run', 'build', '--workspace', '@formic/desktop']);
+
+  const packageDir = path.resolve(options.packageDir);
+  await rm(packageDir, { recursive: true, force: true });
+  await mkdir(packageDir, { recursive: true });
+
+  await run(electronBuilderBinary(), ['--config', 'electron-builder.desktop.cjs', '--dir'], {
+    env: {
+      ...process.env,
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false',
+      FORMIC_ELECTRON_BUILDER_OUTPUT_DIR: packageDir,
+      FORMIC_ELECTRON_BUILDER_SERVER_DIR: bundleDir
+    }
+  });
+
+  const packagedApp = await findPackagedApp(packageDir);
+  await validateBundle(packagedApp.serverDir);
+  console.log(`[formic-rehearsal] Packaged app ready: ${displayPath(packagedApp.appDir)}`);
+  console.log(`[formic-rehearsal] Packaged resources server: ${displayPath(packagedApp.serverDir)}`);
+  return packagedApp;
+}
+
 async function stopProcessGroup(child) {
   if (child.exitCode !== null || child.signalCode !== null) {
     return;
@@ -341,6 +434,18 @@ async function stopProcessGroup(child) {
   }
 }
 
+function assertPackagedResourceLaunchOutput(output, packagedApp) {
+  assertNoStartupFailureOutput(output);
+
+  if (!output.includes('bundled venv')) {
+    throw new Error('Electron did not report the packaged bundled venv launch plan.');
+  }
+
+  if (!output.includes(packagedApp.serverDir)) {
+    throw new Error(`Electron did not report the packaged resources server path: ${packagedApp.serverDir}`);
+  }
+}
+
 async function ensurePortAvailable(port) {
   try {
     await probeJson(`http://127.0.0.1:${port}/health`, { timeoutMs: 500 });
@@ -349,6 +454,84 @@ async function ensurePortAvailable(port) {
   }
 
   throw new Error(`Port ${port} already has a healthy Formic backend. Choose another port with --port.`);
+}
+
+async function smokePackagedResources(options) {
+  const packagedApp = await packageResourcesApp(options);
+  await ensurePortAvailable(options.port);
+
+  const serverUrl = `http://127.0.0.1:${options.port}`;
+  const customRuntimeRoot = Boolean(process.env.FORMIC_REHEARSAL_RUNTIME_DIR);
+  const runtimeRoot = customRuntimeRoot
+    ? path.resolve(repoRoot, process.env.FORMIC_REHEARSAL_RUNTIME_DIR)
+    : path.join(defaultRuntimeDir, `resources-smoke-${options.port}`);
+  const runtimeDataDir = path.join(runtimeRoot, 'data');
+  const runtimeStaticDir = path.join(runtimeRoot, 'backend-static');
+
+  if (!customRuntimeRoot) {
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+
+  await mkdir(runtimeDataDir, { recursive: true });
+  await mkdir(runtimeStaticDir, { recursive: true });
+
+  const env = {
+    ...process.env,
+    FORMIC_SERVER_MODE: 'spawn',
+    FORMIC_SERVER_PORT: String(options.port),
+    FORMIC_SERVER_URL: serverUrl,
+    FORMIC_RENDERER_URL: 'about:blank',
+    FORMIC_SERVER_READY_TIMEOUT_MS: String(options.timeoutMs),
+    FORMIC_LAZY_EMBEDDINGS: 'true',
+    DATA_DIR: runtimeDataDir,
+    STATIC_DIR: runtimeStaticDir
+  };
+  delete env.FORMIC_SERVER_BUNDLE_DIR;
+  delete env.FORMIC_PYTHON;
+
+  const electron = spawn(packagedApp.executable, [], {
+    cwd: path.dirname(packagedApp.executable),
+    detached: process.platform !== 'win32',
+    env,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let output = '';
+  const capture = (chunk) => {
+    const text = chunk.toString();
+    output += text;
+    process.stdout.write(text);
+  };
+  electron.stdout.on('data', capture);
+  electron.stderr.on('data', capture);
+
+  try {
+    await waitForEndpoint(`${serverUrl}/health`, (json) => {
+      if (json.status !== true) {
+        throw new Error('/health status was not true');
+      }
+    }, options.timeoutMs, () => assertNoStartupFailureOutput(output));
+
+    await waitForEndpoint(`${serverUrl}/ready`, (json) => {
+      if (json.status !== true) {
+        throw new Error('/ready status was not true');
+      }
+    }, options.timeoutMs, () => assertNoStartupFailureOutput(output));
+
+    const version = await waitForEndpoint(`${serverUrl}/api/version`, (json) => {
+      if (!json.version) {
+        throw new Error('/api/version did not include a version');
+      }
+    }, options.timeoutMs, () => assertNoStartupFailureOutput(output));
+
+    assertPackagedResourceLaunchOutput(output, packagedApp);
+
+    console.log(
+      `[formic-rehearsal] Packaged resources smoke passed: /health, /ready, /api/version=${version.version}`
+    );
+  } finally {
+    await stopProcessGroup(electron);
+  }
 }
 
 async function smokeBundle(options) {
@@ -443,6 +626,16 @@ async function main() {
 
   if (options.command === 'build') {
     await buildBundle(options);
+    return;
+  }
+
+  if (options.command === 'resources-package') {
+    await packageResourcesApp(options);
+    return;
+  }
+
+  if (options.command === 'resources-smoke') {
+    await smokePackagedResources(options);
     return;
   }
 

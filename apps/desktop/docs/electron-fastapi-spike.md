@@ -54,6 +54,24 @@ npm run desktop:bundle:smoke
 
 The smoke command rebuilds the rehearsal bundle, builds `@formic/desktop`, launches Electron with `FORMIC_SERVER_BUNDLE_DIR`, uses a port-scoped `build/desktop-rehearsal/runtime-data/smoke-<port>` directory for disposable runtime data/static files, confirms Electron chose the `FORMIC_SERVER_BUNDLE_DIR venv` launch plan, then checks `/health`, `/ready`, and `/api/version`.
 
+## Packaged Resources Rehearsal
+
+The next Phase 0 proof packages an unsigned local `.app` directory and places the same server bundle where Electron will look in a packaged app:
+
+```sh
+npm run desktop:resources:smoke
+```
+
+This builds `build/desktop-rehearsal/formic-server`, packages `build/desktop-rehearsal/packaged-app/mac-arm64/Formic.app`, copies the bundle to `Formic.app/Contents/Resources/formic-server`, launches that `.app` with `FORMIC_SERVER_BUNDLE_DIR` removed, confirms Electron reports the `bundled venv` launch plan from the resources path, then checks `/health`, `/ready`, and `/api/version`.
+
+To create the packaged layout without launching the smoke:
+
+```sh
+npm run desktop:resources:package
+```
+
+The electron-builder config is `electron-builder.desktop.cjs`. It keeps app code in `app.asar` while copying `formic-server/` as `extraResources`, so Python, backend files, lock/context files, and `.venv/` remain directly executable under `Contents/Resources/formic-server`.
+
 ## Decision Notes
 
 - The Electron shell can check for an already-running backend before spawning its own process.
@@ -78,6 +96,7 @@ The smoke command rebuilds the rehearsal bundle, builds `@formic/desktop`, launc
 - First-run backend startup downloaded the default embedding model before binding the port. Desktop packaging should either prebundle/cache that model, disable auto-update for the shell smoke path, or show an explicit startup progress state.
 - `npm run desktop:bundle:build` now produces the disposable `formic-server` root under `build/desktop-rehearsal/`.
 - `npm run desktop:bundle:smoke` is the concrete proof for this spike: Electron launches the bundle-local `.venv` server and the backend responds on `/health`, `/ready`, and `/api/version`.
+- `npm run desktop:resources:smoke` now proves the same API sidecar works from the packaged app resources path with no `FORMIC_SERVER_BUNDLE_DIR`.
 
 ## Current Packaging Read
 
@@ -85,4 +104,4 @@ Recommended path: keep pursuing a bundled Python/venv sidecar as the Phase 0 def
 
 Fallback path: keep `FORMIC_SERVER_MODE=external` for Docker or a user-managed server. Do not make this the primary desktop story unless the bundled-venv rehearsal fails on clean machines.
 
-Remaining blocker for a real packaged `.app`: this still does not copy the bundle into an Electron app, prove venv relocatability after app packaging, codesign/notarize the Python binaries, or decide how model/cache data is shipped versus initialized at first run. The next packaging decision should be an electron-builder resources recipe that copies this exact `formic-server` shape into `resources/formic-server`, followed by the same health/readiness/version smoke against the packaged app layout.
+Remaining blocker for a real packaged `.app`: the local `.venv` relocated into `Contents/Resources/formic-server` on this machine, but this still does not solve codesign/notarization of Python binaries, cross-machine reproducibility, installer layout, updater behavior, or how model/cache data is shipped versus initialized at first run. The next packaging decision should be the signed-app Python artifact strategy before `.dmg` polish.

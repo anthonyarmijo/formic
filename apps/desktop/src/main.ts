@@ -403,6 +403,7 @@ function spawnServer(): void {
   console.log(
     `[formic-desktop] Server launch plan: ${launchPlan.command} ${launchPlan.args.join(' ')} (${launchPlan.source})`
   );
+  console.log(`[formic-desktop] Server root: ${launchPlan.cwd}`);
 
   serverProcess = spawn(launchPlan.command, [
     ...launchPlan.args,
