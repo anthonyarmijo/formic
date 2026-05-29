@@ -16,9 +16,21 @@ type ProbeResult = {
   statusCode?: number;
 };
 
+type ServerLaunchPlan = {
+  command: string;
+  args: string[];
+  cwd: string;
+  backendDir: string;
+  source: string;
+};
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../..');
-const backendDir = path.join(repoRoot, 'backend');
+const packagedServerRoot = path.join(process.resourcesPath, 'formic-server');
+const shouldUseBundledServerRoot =
+  Boolean(process.env.FORMIC_SERVER_BUNDLE_DIR) || (app.isPackaged && existsSync(packagedServerRoot));
+const serverRoot =
+  process.env.FORMIC_SERVER_BUNDLE_DIR ?? (shouldUseBundledServerRoot ? packagedServerRoot : repoRoot);
 
 const serverPort = Number(process.env.FORMIC_SERVER_PORT ?? '8080');
 const serverUrl = process.env.FORMIC_SERVER_URL ?? `http://127.0.0.1:${serverPort}`;
@@ -27,6 +39,7 @@ const healthUrl = new URL('/health', serverUrl).toString();
 const readinessUrl = new URL('/ready', serverUrl).toString();
 const serverReadyTimeoutMs = parseTimeout(process.env.FORMIC_SERVER_READY_TIMEOUT_MS, 120000);
 const rendererReadyTimeoutMs = parseTimeout(process.env.FORMIC_RENDERER_READY_TIMEOUT_MS, 120000);
+const serverLogLineLimit = parseTimeout(process.env.FORMIC_SERVER_LOG_LINES, 24);
 const configuredServerMode = parseServerMode(process.env.FORMIC_SERVER_MODE);
 
 let serverProcess: ChildProcessWithoutNullStreams | null = null;
@@ -37,6 +50,8 @@ let lastServerError: string | null = null;
 let lastServerProbe: string | null = null;
 let lastRendererError: string | null = null;
 let lastRendererProbe: string | null = null;
+let activeServerLaunchPlan: ServerLaunchPlan | null = null;
+const recentServerOutput: string[] = [];
 let isQuitting = false;
 
 function parseServerMode(mode: string | undefined): ServerMode {
@@ -83,6 +98,92 @@ function buildCorsAllowOrigin(): string {
   ].filter((origin): origin is string => Boolean(origin));
 
   return [...new Set(origins)].join(';');
+}
+
+function findBundledPython(root: string): string | null {
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          path.join(root, '.venv', 'Scripts', 'python.exe'),
+          path.join(root, 'venv', 'Scripts', 'python.exe')
+        ]
+      : [path.join(root, '.venv', 'bin', 'python'), path.join(root, 'venv', 'bin', 'python')];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function buildServerLaunchPlan(): ServerLaunchPlan {
+  const backendDir = path.join(serverRoot, 'backend');
+  const python = process.env.FORMIC_PYTHON;
+  const bundledPython = shouldUseBundledServerRoot ? findBundledPython(serverRoot) : null;
+  const uvLockPath = path.join(serverRoot, 'uv.lock');
+
+  if (python) {
+    return {
+      command: python,
+      args: ['-m', 'uvicorn'],
+      cwd: serverRoot,
+      backendDir,
+      source: 'FORMIC_PYTHON'
+    };
+  }
+
+  if (bundledPython) {
+    return {
+      command: bundledPython,
+      args: ['-m', 'uvicorn'],
+      cwd: serverRoot,
+      backendDir,
+      source: process.env.FORMIC_SERVER_BUNDLE_DIR ? 'FORMIC_SERVER_BUNDLE_DIR venv' : 'bundled venv'
+    };
+  }
+
+  if (existsSync(uvLockPath)) {
+    return {
+      command: 'uv',
+      args: ['run', '--frozen', '--project', serverRoot, 'python', '-m', 'uvicorn'],
+      cwd: serverRoot,
+      backendDir,
+      source: 'uv lockfile'
+    };
+  }
+
+  return {
+    command: 'python3',
+    args: ['-m', 'uvicorn'],
+    cwd: serverRoot,
+    backendDir,
+    source: 'system python3'
+  };
+}
+
+function formatServerLaunchPlan(plan: ServerLaunchPlan | null): string {
+  if (!plan) {
+    return 'not selected';
+  }
+
+  return [
+    `${plan.command} ${plan.args.join(' ')}`,
+    `source=${plan.source}`,
+    `cwd=${plan.cwd}`,
+    `pythonpath=${plan.backendDir}`
+  ].join('\n');
+}
+
+function recordServerOutput(stream: 'stdout' | 'stderr', chunk: Buffer): void {
+  const lines = chunk
+    .toString()
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    recentServerOutput.push(`[${stream}] ${line.slice(0, 1000)}`);
+  }
+
+  while (recentServerOutput.length > serverLogLineLimit) {
+    recentServerOutput.shift();
+  }
 }
 
 async function probeUrl(
@@ -238,17 +339,22 @@ function spawnServer(): void {
     return;
   }
 
-  const uvLockPath = path.join(repoRoot, 'uv.lock');
-  const python = process.env.FORMIC_PYTHON;
-  const command = python ?? (existsSync(uvLockPath) ? 'uv' : 'python3');
-  const args = python
-    ? ['-m', 'uvicorn']
-    : existsSync(uvLockPath)
-      ? ['run', '--frozen', '--project', repoRoot, 'python', '-m', 'uvicorn']
-      : ['-m', 'uvicorn'];
+  const launchPlan = buildServerLaunchPlan();
+  activeServerLaunchPlan = launchPlan;
+  recentServerOutput.length = 0;
 
-  serverProcess = spawn(command, [
-    ...args,
+  if (!existsSync(launchPlan.backendDir)) {
+    serverStatus = 'failed';
+    lastServerError = `Backend directory does not exist: ${launchPlan.backendDir}`;
+    return;
+  }
+
+  console.log(
+    `[formic-desktop] Server launch plan: ${launchPlan.command} ${launchPlan.args.join(' ')} (${launchPlan.source})`
+  );
+
+  serverProcess = spawn(launchPlan.command, [
+    ...launchPlan.args,
     'open_webui.main:app',
     '--host',
     '127.0.0.1',
@@ -257,7 +363,7 @@ function spawnServer(): void {
     '--forwarded-allow-ips',
     '*'
   ], {
-    cwd: repoRoot,
+    cwd: launchPlan.cwd,
     env: {
       ...process.env,
       CORS_ALLOW_ORIGIN: buildCorsAllowOrigin(),
@@ -265,17 +371,19 @@ function spawnServer(): void {
       FORMIC_LAZY_EMBEDDINGS: process.env.FORMIC_LAZY_EMBEDDINGS ?? 'true',
       FORWARDED_ALLOW_IPS: '*',
       PORT: String(serverPort),
-      PYTHONPATH: backendDir,
+      PYTHONPATH: launchPlan.backendDir,
       STATIC_DIR: process.env.STATIC_DIR ?? path.join(app.getPath('userData'), 'backend-static'),
       WEBUI_URL: serverUrl
     }
   });
 
   serverProcess.stdout.on('data', (chunk) => {
+    recordServerOutput('stdout', chunk);
     console.log(`[formic-server] ${chunk.toString().trimEnd()}`);
   });
 
   serverProcess.stderr.on('data', (chunk) => {
+    recordServerOutput('stderr', chunk);
     console.error(`[formic-server] ${chunk.toString().trimEnd()}`);
   });
 
@@ -403,10 +511,12 @@ function serverFailureHtml(message: string): string {
   return failureHtml('Formic Backend Failed', 'Electron opened, but the FastAPI backend did not become ready.', [
     message,
     `Mode: ${activeServerMode}`,
+    `Launch plan:\n${formatServerLaunchPlan(activeServerLaunchPlan)}`,
     `Health URL: ${healthUrl}`,
     `Readiness URL: ${readinessUrl}`,
     lastServerProbe ? `Last probe: ${lastServerProbe}` : '',
-    lastServerError ? `Last process error: ${lastServerError}` : ''
+    lastServerError ? `Last process error: ${lastServerError}` : '',
+    recentServerOutput.length ? `Recent server output:\n${recentServerOutput.join('\n')}` : ''
   ]);
 }
 
@@ -469,7 +579,10 @@ ipcMain.handle('formic:server-status', () => ({
   lastServerError,
   lastServerProbe,
   lastRendererError,
-  lastRendererProbe
+  lastRendererProbe,
+  serverRoot,
+  serverLaunchPlan: activeServerLaunchPlan,
+  recentServerOutput
 }));
 
 app.whenReady().then(createWindow);

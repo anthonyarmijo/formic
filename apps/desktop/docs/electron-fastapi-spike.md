@@ -28,10 +28,12 @@ Prove whether the Phase 0 desktop shell can own the lifecycle of the existing Fa
 - `FORMIC_SERVER_MODE=auto` checks for an existing backend, then spawns one if needed.
 - `FORMIC_SERVER_MODE=spawn` always owns the local FastAPI sidecar.
 - `FORMIC_SERVER_MODE=external` only connects to an already-running server and reports failure if it is unhealthy.
-- The sidecar path is intentionally local-dev only: it uses the repo's `uv` environment or an explicit `FORMIC_PYTHON`, not PyInstaller yet.
+- The sidecar path now supports the next bundled-venv rehearsal: set `FORMIC_SERVER_BUNDLE_DIR` to a server root containing `backend/` plus `.venv` or `venv`, and Electron will use that Python before falling back to the repo's `uv.lock` flow.
+- In a packaged app, Electron will also look for that server root at `process.resourcesPath/formic-server`.
 - Desktop launches set `FORMIC_DESKTOP=true` and default `FORMIC_LAZY_EMBEDDINGS=true`, deferring local embedding model initialization until first retrieval use.
 - Electron shows a startup screen immediately, waits for FastAPI health, then waits for the renderer URL before loading the app.
-- The next Phase 0 decision is packaging strategy: either bundle a Python runtime/venv or ship a Docker/server connection fallback while packaging is hardened.
+- Backend failure screens include the selected launch plan and recent sidecar output.
+- The next Phase 0 decision is the packaging recipe for bundled Python/venv. Docker/server connection mode should stay as the fallback unless the bundled rehearsal proves too brittle.
 
 ## Results
 
@@ -41,3 +43,9 @@ Prove whether the Phase 0 desktop shell can own the lifecycle of the existing Fa
 - The backend command reached `/health` and `/api/version` successfully on port `18080` after fixing Formic changelog heading parsing.
 - System `python3` is not viable as the default local launcher on this machine because it is Python 3.14 and has no `uvicorn`; `uv run --frozen --project .` is the working local path.
 - First-run backend startup downloaded the default embedding model before binding the port. Desktop packaging should either prebundle/cache that model, disable auto-update for the shell smoke path, or show an explicit startup progress state.
+
+## Current Packaging Read
+
+Recommended path: keep pursuing a bundled Python/venv sidecar as the Phase 0 default because the current app shape already needs a local FastAPI process for desktop parity. The smallest reliable rehearsal is a `formic-server` directory with the current `backend/`, `uv.lock`, and a prebuilt `.venv`, launched through `FORMIC_SERVER_BUNDLE_DIR`.
+
+Fallback path: keep `FORMIC_SERVER_MODE=external` for Docker or a user-managed server. Do not make this the primary desktop story unless the bundled-venv rehearsal fails on clean machines.
