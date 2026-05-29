@@ -13,6 +13,7 @@ from open_webui.socket.main import get_event_emitter
 from open_webui.models.chats import (
     ChatForm,
     ChatImportForm,
+    ChatInboxItemResponse,
     ChatUsageStatsListResponse,
     ChatsImportForm,
     ChatResponse,
@@ -193,6 +194,51 @@ async def get_session_user_chat_usage_stats(
     except Exception as e:
         log.exception(e)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT())
+
+
+############################
+# Inbox
+############################
+
+
+@router.get('/inbox', response_model=list[ChatInboxItemResponse])
+async def get_session_user_inbox(
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    try:
+        items = await Chats.get_unread_chats_by_user_id(user.id, db=db)
+        folders = await Folders.get_folders_by_user_id(user.id, db=db)
+        folder_names = {folder.id: folder.name for folder in folders}
+
+        return [
+            ChatInboxItemResponse.model_validate(
+                {
+                    **item.model_dump(),
+                    'folder_name': folder_names.get(item.folder_id) if item.folder_id else None,
+                }
+            )
+            for item in items
+        ]
+    except Exception as e:
+        log.exception(e)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT())
+
+
+@router.post('/{id}/mark-read')
+async def mark_chat_read_by_id(
+    id: str,
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    marked = await Chats.update_chat_last_read_at_by_id(id, user.id, db=db)
+    if marked:
+        return True
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=ERROR_MESSAGES.NOT_FOUND,
+    )
 
 
 ############################

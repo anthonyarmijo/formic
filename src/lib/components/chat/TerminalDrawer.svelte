@@ -45,8 +45,10 @@
 			const token = localStorage.getItem('token') ?? '';
 
 			// Determine the terminal server to use
-			const systemTerminals = ($terminalServers ?? []).filter((t: any) => t.id);
-			const directTerminals = ($settings?.terminalServers ?? []).filter((s: any) => s.url);
+			const systemTerminals = (($terminalServers ?? []) as any[]).filter((t: any) => t.id);
+			const directTerminals = ((($settings as any)?.terminalServers ?? []) as any[]).filter(
+				(s: any) => s.url
+			);
 
 			if (systemTerminals.length > 0) {
 				const serverId = systemTerminals[0].id;
@@ -125,17 +127,16 @@
 		transition:fly={{ y: 20, duration: 200 }}
 	>
 		<!-- Resize Handle -->
-		<!-- svelte-ignore a11y-no-static-element-interactions -->
+		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 		<div
 			class="flex-shrink-0 h-1.5 cursor-ns-resize hover:bg-gray-600 transition-colors group relative"
 			on:mousedown={onResizeStart}
 			role="separator"
 			aria-orientation="horizontal"
 			aria-label="Resize terminal"
-			tabindex="0"
 		>
 			<div class="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center">
-				<div class="w-8 h-0.5 rounded-full bg-gray-600 group-hover:bg-gray-400 transition-colors" />
+				<div class="w-8 h-0.5 rounded-full bg-gray-600 group-hover:bg-gray-400 transition-colors"></div>
 			</div>
 		</div>
 
@@ -170,7 +171,7 @@
 					</div>
 				</div>
 			{:else if terminalMounted}
-				<XTerminal overlay={false} chatId={null} />
+				<XTerminal overlay={false} chatId={folderId || null} />
 			{/if}
 		</div>
 	</div>

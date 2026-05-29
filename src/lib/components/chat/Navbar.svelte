@@ -12,6 +12,7 @@
 		showArchivedChats,
 		showControls,
 		showSidebar,
+		selectedFolder,
 		temporaryChatEnabled,
 		user
 	} from '$lib/stores';
@@ -22,6 +23,7 @@
 
 	import ShareChatModal from '../chat/ShareChatModal.svelte';
 	import ModelSelector from '../chat/ModelSelector.svelte';
+	import ProjectIdeLauncher from '../chat/ProjectIdeLauncher.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Menu from '$lib/components/layout/Navbar/Menu.svelte';
 	import UserMenu from '$lib/components/layout/Sidebar/UserMenu.svelte';
@@ -61,6 +63,12 @@
 
 	let showShareChatModal = false;
 	let showDownloadChatModal = false;
+
+	$: projectPath =
+		$selectedFolder?.data?.group_type === 'project' &&
+		typeof $selectedFolder?.data?.project_path === 'string'
+			? $selectedFolder.data.project_path.trim()
+			: '';
 </script>
 
 <ShareChatModal bind:show={showShareChatModal} chatId={$chatId} />
@@ -120,6 +128,8 @@
 
 				<div class="self-start flex flex-none items-center text-gray-600 dark:text-gray-400">
 					<!-- <div class="md:hidden flex self-center w-[1px] h-5 mx-2 bg-gray-300 dark:bg-stone-700" /> -->
+
+					<ProjectIdeLauncher {projectPath} />
 
 					{#if $user?.role === 'user' ? ($user?.permissions?.chat?.temporary ?? true) && !($user?.permissions?.chat?.temporary_enforced ?? false) : true}
 						{#if !chat?.id}

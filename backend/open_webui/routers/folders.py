@@ -38,6 +38,17 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+FOLDER_LIST_DATA_KEYS = {'group_type', 'project_path', 'tags', 'workspace'}
+
+
+def sanitize_folder_list_data(data: Optional[dict]) -> Optional[dict]:
+    if not data:
+        return None
+
+    sanitized = {key: data[key] for key in FOLDER_LIST_DATA_KEYS if key in data}
+    return sanitized or None
+
+
 ############################
 # Get Folders
 ############################
@@ -46,6 +57,10 @@ router = APIRouter()
 @router.get('/', response_model=list[FolderNameIdResponse])
 async def get_folders(
     request: Request,
+    type: Optional[str] = None,
+    has_path: Optional[bool] = None,
+    tag: Optional[str] = None,
+    workspace: Optional[str] = None,
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -71,6 +86,18 @@ async def get_folders(
     # Verify folder data integrity
     folder_list = []
     for folder in folders:
+        data = folder.data or {}
+        if type and data.get('group_type') != type:
+            continue
+        if has_path is True and not data.get('project_path'):
+            continue
+        if has_path is False and data.get('project_path'):
+            continue
+        if tag and tag not in (data.get('tags') or []):
+            continue
+        if workspace and data.get('workspace') != workspace:
+            continue
+
         if folder.parent_id and not await Folders.get_folder_by_id_and_user_id(folder.parent_id, user.id, db=db):
             folder = await Folders.update_folder_parent_id_by_id_and_user_id(folder.id, user.id, None, db=db)
 
@@ -82,9 +109,44 @@ async def get_folders(
                     folder.id, user.id, FolderUpdateForm(data=folder.data), db=db
                 )
 
-        folder_list.append(FolderNameIdResponse(**folder.model_dump()))
+        folder_data = folder.model_dump()
+        folder_data['data'] = sanitize_folder_list_data(folder.data)
+        folder_list.append(FolderNameIdResponse(**folder_data))
 
     return folder_list
+
+
+@router.get('/workspaces', response_model=list[str])
+async def get_folder_workspaces(
+    request: Request,
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    if request.app.state.config.ENABLE_FOLDERS is False:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    if user.role != 'admin' and not await has_permission(
+        user.id,
+        'features.folders',
+        request.app.state.config.USER_PERMISSIONS,
+        db=db,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    folders = await Folders.get_folders_by_user_id(user.id, db=db)
+    workspaces = {
+        folder.data.get('workspace').strip()
+        for folder in folders
+        if folder.data and isinstance(folder.data.get('workspace'), str) and folder.data.get('workspace').strip()
+    }
+
+    return sorted(workspaces, key=str.casefold)
 
 
 ############################

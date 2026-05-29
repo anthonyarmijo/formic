@@ -35,10 +35,17 @@ export const createNewFolder = async (token: string, folderForm: FolderForm) => 
 	return res;
 };
 
-export const getFolders = async (token: string = '') => {
+export const getFolders = async (token: string = '', filter: Record<string, any> = {}) => {
 	let error = null;
+	const searchParams = new URLSearchParams();
 
-	const res = await fetch(`${WEBUI_API_BASE_URL}/folders/`, {
+	Object.entries(filter).forEach(([key, value]) => {
+		if (value !== undefined && value !== null && value !== '') {
+			searchParams.append(key, value.toString());
+		}
+	});
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/folders/?${searchParams.toString()}`, {
 		method: 'GET',
 		headers: {
 			Accept: 'application/json',
@@ -64,6 +71,34 @@ export const getFolders = async (token: string = '') => {
 	}
 
 	return res;
+};
+
+export const getFolderWorkspaces = async (token: string = '') => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/folders/workspaces`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res ?? [];
 };
 
 export const getFolderById = async (token: string, id: string) => {

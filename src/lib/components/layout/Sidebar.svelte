@@ -61,6 +61,7 @@
 	import Folder from '../common/Folder.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Folders from './Sidebar/Folders.svelte';
+	import Inbox from './Sidebar/Inbox.svelte';
 	import { getChannels, createNewChannel } from '$lib/apis/channels';
 	import ChannelModal from './Sidebar/ChannelModal.svelte';
 	import ChannelItem from './Sidebar/ChannelItem.svelte';
@@ -101,6 +102,7 @@
 
 	let folders = {};
 	let folderRegistry = {};
+	let activeWorkspace = 'all';
 
 	let newFolderId = null;
 
@@ -219,9 +221,18 @@
 	const createFolder = async ({ name, data, parent_id }) => {
 		name = name?.trim();
 		if (!name) {
-			toast.error($i18n.t('Folder name cannot be empty.'));
+			toast.error($i18n.t('Group name cannot be empty.'));
 			return;
 		}
+		data = {
+			...(data ?? {}),
+			workspace:
+				activeWorkspace !== 'all'
+					? activeWorkspace
+					: typeof data?.workspace === 'string' && data.workspace.trim()
+						? data.workspace.trim()
+						: 'personal'
+		};
 
 		// Check for duplicate names in the same parent
 		const siblings = Object.values(folders).filter((folder) => folder.parent_id === parent_id);
@@ -504,6 +515,8 @@
 	};
 
 	onMount(async () => {
+		activeWorkspace = localStorage.getItem('formic.activeWorkspace') || 'all';
+
 		try {
 			const width = Number(localStorage.getItem('sidebarWidth'));
 			if (!Number.isNaN(width) && width >= MIN_WIDTH && width <= MAX_WIDTH) {
@@ -731,6 +744,7 @@
 
 <FolderModal
 	bind:show={showCreateFolderModal}
+	defaultWorkspace={activeWorkspace === 'all' ? 'personal' : activeWorkspace}
 	onSubmit={async (folder) => {
 		await createFolder(folder);
 		showCreateFolderModal = false;
@@ -780,7 +794,7 @@
 
 {#if !$mobile && !$showSidebar}
 	<div
-		class=" pt-[7px] pb-2 px-2 flex flex-col justify-between text-black dark:text-white hover:bg-gray-50/30 dark:hover:bg-gray-950/30 h-full z-10 transition-all border-e-[0.5px] border-gray-50 dark:border-gray-850/30"
+		class="pt-[7px] pb-2 px-2 flex flex-col justify-between text-black dark:text-white bg-gray-100/45 dark:bg-gray-900/50 backdrop-blur-2xl backdrop-saturate-150 hover:bg-gray-100/55 dark:hover:bg-gray-900/60 h-full z-10 transition-all border-e-[0.5px] border-white/30 dark:border-white/10 shadow-2xl"
 		id="sidebar"
 	>
 		<button
@@ -979,7 +993,7 @@
 	</div>
 {/if}
 
-<!-- {$i18n.t('New Folder')} -->
+<!-- {$i18n.t('New Group')} -->
 <!-- {$i18n.t('Pinned')} -->
 
 {#if $showSidebar}
@@ -987,8 +1001,8 @@
 		bind:this={navElement}
 		id="sidebar"
 		class="h-screen max-h-[100dvh] min-h-screen select-none {$showSidebar
-			? `${$mobile ? 'bg-gray-50 dark:bg-gray-950' : 'bg-gray-50/70 dark:bg-gray-950/70'} z-50`
-			: ' bg-transparent z-0 '} {$isApp
+			? `${$mobile ? 'bg-gray-100/85 dark:bg-gray-900/85' : 'bg-gray-100/45 dark:bg-gray-900/55'} z-50 border-e border-white/30 dark:border-white/10 shadow-2xl`
+			: ' bg-transparent z-0 '} backdrop-blur-2xl backdrop-saturate-150 {$isApp
 			? `ml-[4.5rem] md:ml-0 `
 			: ' transition-all duration-300 '} shrink-0 text-gray-900 dark:text-gray-200 text-sm fixed top-0 left-0 overflow-x-hidden
         "
@@ -1047,7 +1061,7 @@
 				<div
 					class="{scrollTop > 0
 						? 'visible'
-						: 'invisible'} sidebar-bg-gradient-to-b bg-linear-to-b from-gray-50 dark:from-gray-950 to-transparent from-50% pointer-events-none absolute inset-0 -z-10 -mb-6"
+						: 'invisible'} sidebar-bg-gradient-to-b bg-linear-to-b from-gray-100/80 dark:from-gray-900/80 to-transparent from-50% pointer-events-none absolute inset-0 -z-10 -mb-6"
 				></div>
 			</div>
 
@@ -1295,17 +1309,26 @@
 					</Folder>
 				{/if}
 
+				<Inbox
+					onOpen={() => {
+						selectedFolder.set(null);
+						if ($mobile) {
+							showSidebar.set(false);
+						}
+					}}
+				/>
+
 				{#if $config?.features?.enable_folders && ($user?.role === 'admin' || ($user?.permissions?.features?.folders ?? true))}
 					<Folder
 						id="sidebar-folders"
 						bind:open={showFolders}
 						className="px-2 mt-0.5"
-						name={$i18n.t('Folders')}
+						name={$i18n.t('Groups')}
 						chevron={false}
 						onAdd={() => {
 							showCreateFolderModal = true;
 						}}
-						onAddLabel={$i18n.t('New Folder')}
+						onAddLabel={$i18n.t('New Group')}
 						on:drop={async (e) => {
 							const { type, id, item } = e.detail;
 
@@ -1329,6 +1352,7 @@
 					>
 						<Folders
 							bind:folderRegistry
+							bind:activeWorkspace
 							{folders}
 							{shiftKey}
 							onDelete={(folderId) => {
@@ -1592,7 +1616,7 @@
 
 			<div class="px-1.5 pt-1.5 pb-2 sticky bottom-0 z-10 -mt-3 sidebar">
 				<div
-					class=" sidebar-bg-gradient-to-t bg-linear-to-t from-gray-50 dark:from-gray-950 to-transparent from-50% pointer-events-none absolute inset-0 -z-10 -mt-6"
+					class=" sidebar-bg-gradient-to-t bg-linear-to-t from-gray-100/80 dark:from-gray-900/80 to-transparent from-50% pointer-events-none absolute inset-0 -z-10 -mt-6"
 				></div>
 				<div class="flex flex-col font-primary">
 					{#if $user !== undefined && $user !== null}
