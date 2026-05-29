@@ -1025,6 +1025,58 @@ function developerIdIdentityFromEnv() {
   return process.env.FORMIC_DEVELOPER_IDENTITY || process.env.CSC_NAME || '';
 }
 
+function developerIdIdentitiesFromSecurityOutput(output) {
+  return output
+    .split('\n')
+    .map((line) => line.match(/"([^"]+)"/)?.[1] || '')
+    .filter((identity) => identity.startsWith('Developer ID Application:'));
+}
+
+async function findDeveloperIdIdentities() {
+  const identities = await runResult('security', ['find-identity', '-v', '-p', 'codesigning']);
+  return {
+    code: identities.code,
+    output: identities.output,
+    identities: identities.code === 0 ? developerIdIdentitiesFromSecurityOutput(identities.output) : []
+  };
+}
+
+async function resolveDeveloperIdIdentity() {
+  const identity = developerIdIdentityFromEnv();
+  if (identity) {
+    return identity;
+  }
+
+  const discovered = await findDeveloperIdIdentities();
+  if (discovered.identities.length === 1) {
+    const [discoveredIdentity] = discovered.identities;
+    console.log(`[formic-rehearsal] Developer ID signing identity auto-detected: ${discoveredIdentity}`);
+    return discoveredIdentity;
+  }
+
+  if (discovered.identities.length > 1) {
+    throw new Error(
+      [
+        'Developer ID signing found multiple Developer ID Application identities.',
+        'Set FORMIC_DEVELOPER_IDENTITY or CSC_NAME to choose one explicitly.',
+        'Available Developer ID Application identities:',
+        ...discovered.identities.map((discoveredIdentity) => `  - ${discoveredIdentity}`)
+      ].join('\n')
+    );
+  }
+
+  throw new Error(
+    [
+      'Developer ID signing requires FORMIC_DEVELOPER_IDENTITY or CSC_NAME when no single Developer ID Application identity can be auto-detected.',
+      'Example:',
+      '  FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" npm run desktop:resources:managed-developer-id-sign-check',
+      'This command does not read notarization credentials and does not fall back to ad-hoc signing.',
+      'Available signing identities reported by security:',
+      discovered.output.trim() || '(none)'
+    ].join('\n')
+  );
+}
+
 async function assertDeveloperIdIdentity(identity) {
   if (!identity) {
     throw new Error(
@@ -1041,8 +1093,8 @@ async function assertDeveloperIdIdentity(identity) {
     throw new Error(`Expected a Developer ID Application identity, received: ${identity}`);
   }
 
-  const identities = await runResult('security', ['find-identity', '-v', '-p', 'codesigning']);
-  if (identities.code !== 0 || !identities.output.includes(identity)) {
+  const identities = await findDeveloperIdIdentities();
+  if (identities.code !== 0 || !identities.identities.includes(identity)) {
     throw new Error(
       [
         `Developer ID identity was not found in the local keychain: ${identity}`,
@@ -1175,7 +1227,7 @@ async function signManagedDeveloperIdApp(options, { runPreflight = true } = {}) 
   }
 
   const preflight = runPreflight ? await managedSigningPreflight(options) : null;
-  const identity = developerIdIdentityFromEnv();
+  const identity = await resolveDeveloperIdIdentity();
   await assertDeveloperIdIdentity(identity);
 
   console.log(`[formic-rehearsal] Developer ID signing identity: ${identity}`);
@@ -1297,6 +1349,7 @@ function assertNotarizationCredentials() {
   throw new Error(
     [
       'Notarization requires Apple notary credentials; none were found.',
+      'FORMIC_DEVELOPER_IDENTITY may be omitted when exactly one Developer ID Application identity is available locally.',
       'Use Apple ID credentials:',
       '  FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" \\',
       '  APPLE_ID="developer@example.com" \\',
