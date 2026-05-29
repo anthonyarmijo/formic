@@ -125,6 +125,26 @@ npm run desktop:resources:managed-adhoc-sign-check
 
 It packages the managed runtime under `Contents/Resources/formic-server`, audits the packaged Python artifact, runs `codesign --force --deep --sign -`, and verifies with `codesign --verify --deep --strict`. This is not Developer ID signing, is not notarization, and does not prove Gatekeeper acceptance.
 
+## Developer ID Signing Rehearsal
+
+The signing preflight is credential-optional:
+
+```sh
+npm run desktop:resources:managed-signing-preflight
+```
+
+It packages the managed runtime under `Contents/Resources/formic-server`, runs the artifact audit, inventories the Python runtime Mach-O files, reports currently unsigned/signable files, and prints the intended signing order.
+
+The Developer ID dry run is credential-gated:
+
+```sh
+FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" npm run desktop:resources:managed-developer-id-sign-check
+```
+
+`CSC_NAME` is accepted as a fallback identity variable. This command enables hardened runtime through `FORMIC_ELECTRON_BUILDER_SIGNING_MODE=developer-id`, uses the tracked minimal entitlements, signs Python runtime Mach-O files deepest-first, re-signs the outer `.app`, verifies with `codesign --verify --deep --strict --verbose=4`, runs diagnostic-only `spctl --assess --type execute --verbose=4`, then launches the signed app with no `FORMIC_SERVER_BUNDLE_DIR` and verifies `/health`, `/ready`, and `/api/version`.
+
+If no Developer ID Application identity is configured, the command runs preflight and fails with setup instructions. It does not fall back to ad-hoc signing and does not attempt notarization.
+
 ## Decision Notes
 
 - The Electron shell can check for an already-running backend before spawning its own process.
@@ -155,6 +175,8 @@ It packages the managed runtime under `Contents/Resources/formic-server`, audits
 - `npm run desktop:bundle:managed-smoke -- --clean` now proves Electron can launch the API sidecar from an in-bundle managed `python-runtime/` with no `.venv` or user-home Python symlink.
 - `npm run desktop:resources:managed-smoke` now proves the managed `python-runtime/` sidecar works from `Formic.app/Contents/Resources/formic-server` with no `FORMIC_SERVER_BUNDLE_DIR`.
 - `npm run desktop:resources:managed-adhoc-sign-check` now proves the managed packaged resources layout can be recursively ad-hoc signed and verified locally; this does not replace Developer ID signing or notarization.
+- `npm run desktop:resources:managed-signing-preflight` now inventories the managed packaged app's Python Mach-O payload and intended signing order without Apple credentials.
+- `npm run desktop:resources:managed-developer-id-sign-check` now provides the credential-gated Developer ID hardened-runtime signing dry run; it still does not notarize or staple.
 
 ## Current Packaging Read
 
@@ -162,4 +184,4 @@ Recommended path: keep pursuing a bundled Python sidecar as the Phase 0 default 
 
 Fallback path: keep `FORMIC_SERVER_MODE=external` for Docker or a user-managed server. Do not make this the primary desktop story unless the bundled-venv rehearsal fails on clean machines.
 
-Remaining blocker for a real packaged `.app`: replace the local ad-hoc `codesign --deep` proof with a production Developer ID signing plan for the Electron app, Python runtime, and every native `.so`/`.dylib`, then prepare hardened runtime, entitlements, notarization, and stapling checks. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough.
+Remaining blocker for a distributable packaged `.app`: run the Developer ID dry run with real credentials, then upload the signed artifact to Apple's notary service, inspect the notary log, staple the ticket, and repeat Gatekeeper assessment. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough.

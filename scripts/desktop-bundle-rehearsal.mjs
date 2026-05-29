@@ -15,6 +15,8 @@ const defaultRuntimeDir = path.join(defaultRehearsalRoot, 'runtime-data');
 const defaultPort = 18080;
 const defaultTimeoutMs = 180000;
 const managedPythonRequest = '3.11';
+const mainEntitlementsPath = path.join(repoRoot, 'apps', 'desktop', 'signing', 'entitlements.mac.plist');
+const inheritedEntitlementsPath = path.join(repoRoot, 'apps', 'desktop', 'signing', 'entitlements.mac.inherit.plist');
 
 const rootContextFiles = [
   'pyproject.toml',
@@ -106,6 +108,8 @@ function parseArgs(argv) {
       'resources-managed-package',
       'resources-managed-smoke',
       'resources-managed-adhoc-sign-check',
+      'resources-managed-signing-preflight',
+      'resources-managed-developer-id-sign-check',
       'audit',
       'relocation-smoke',
       'managed-build',
@@ -247,6 +251,36 @@ function run(command, args, options = {}) {
       } else {
         reject(new Error(`${command} ${args.join(' ')} exited with code ${code ?? 'null'} and signal ${signal ?? 'null'}`));
       }
+    });
+  });
+}
+
+function runResult(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd || repoRoot,
+      env: options.env || process.env,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      resolve({
+        code,
+        signal,
+        stdout,
+        stderr,
+        output: `${stdout}${stderr}`
+      });
     });
   });
 }
@@ -819,7 +853,7 @@ async function findPackagedApp(packageDir) {
   };
 }
 
-async function packageResourcesApp(options, { managed = false } = {}) {
+async function packageResourcesApp(options, { managed = false, signingMode = 'unsigned', identity = '' } = {}) {
   const bundleDir = managed ? await buildManagedRuntimeBundle(options) : await buildBundle(options);
   await run('npm', ['run', 'build', '--workspace', '@formic/desktop']);
 
@@ -830,7 +864,10 @@ async function packageResourcesApp(options, { managed = false } = {}) {
   await run(electronBuilderBinary(), ['--config', 'electron-builder.desktop.cjs', '--dir'], {
     env: {
       ...process.env,
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false',
+      CSC_IDENTITY_AUTO_DISCOVERY: signingMode === 'developer-id' ? 'true' : 'false',
+      CSC_NAME: identity || process.env.CSC_NAME || '',
+      FORMIC_DEVELOPER_IDENTITY: identity || process.env.FORMIC_DEVELOPER_IDENTITY || '',
+      FORMIC_ELECTRON_BUILDER_SIGNING_MODE: signingMode,
       FORMIC_ELECTRON_BUILDER_OUTPUT_DIR: packageDir,
       FORMIC_ELECTRON_BUILDER_SERVER_DIR: bundleDir
     }
@@ -882,19 +919,14 @@ async function ensurePortAvailable(port) {
   throw new Error(`Port ${port} already has a healthy Formic backend. Choose another port with --port.`);
 }
 
-async function smokePackagedResources(options, { managed = false } = {}) {
-  const packagedApp = await packageResourcesApp(options, { managed });
-  if (managed) {
-    await auditBundle({ ...options, bundleDir: packagedApp.serverDir });
-  }
-
+async function smokePackagedApp(packagedApp, options, { managed = false, runtimeName = null } = {}) {
   await ensurePortAvailable(options.port);
 
   const serverUrl = `http://127.0.0.1:${options.port}`;
   const customRuntimeRoot = Boolean(process.env.FORMIC_REHEARSAL_RUNTIME_DIR);
   const runtimeRoot = customRuntimeRoot
     ? path.resolve(repoRoot, process.env.FORMIC_REHEARSAL_RUNTIME_DIR)
-    : path.join(defaultRuntimeDir, `${managed ? 'resources-managed-smoke' : 'resources-smoke'}-${options.port}`);
+    : path.join(defaultRuntimeDir, `${runtimeName ?? (managed ? 'resources-managed-smoke' : 'resources-smoke')}-${options.port}`);
   const runtimeDataDir = path.join(runtimeRoot, 'data');
   const runtimeStaticDir = path.join(runtimeRoot, 'backend-static');
 
@@ -964,6 +996,15 @@ async function smokePackagedResources(options, { managed = false } = {}) {
   }
 }
 
+async function smokePackagedResources(options, { managed = false } = {}) {
+  const packagedApp = await packageResourcesApp(options, { managed });
+  if (managed) {
+    await auditBundle({ ...options, bundleDir: packagedApp.serverDir });
+  }
+
+  await smokePackagedApp(packagedApp, options, { managed });
+}
+
 async function localOnlyAdHocSignCheck(options) {
   if (process.platform !== 'darwin') {
     throw new Error('The local-only ad-hoc signing check currently expects macOS codesign.');
@@ -976,6 +1017,189 @@ async function localOnlyAdHocSignCheck(options) {
   await run('codesign', ['--force', '--deep', '--sign', '-', packagedApp.appDir]);
   await run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', packagedApp.appDir]);
   console.log(`[formic-rehearsal] Local-only ad-hoc signing check passed: ${displayPath(packagedApp.appDir)}`);
+}
+
+function developerIdIdentityFromEnv() {
+  return process.env.FORMIC_DEVELOPER_IDENTITY || process.env.CSC_NAME || '';
+}
+
+async function assertDeveloperIdIdentity(identity) {
+  if (!identity) {
+    throw new Error(
+      [
+        'Developer ID signing requires FORMIC_DEVELOPER_IDENTITY or CSC_NAME.',
+        'Example:',
+        '  FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" npm run desktop:resources:managed-developer-id-sign-check',
+        'This command does not read notarization credentials and does not fall back to ad-hoc signing.'
+      ].join('\n')
+    );
+  }
+
+  if (!identity.startsWith('Developer ID Application:')) {
+    throw new Error(`Expected a Developer ID Application identity, received: ${identity}`);
+  }
+
+  const identities = await runResult('security', ['find-identity', '-v', '-p', 'codesigning']);
+  if (identities.code !== 0 || !identities.output.includes(identity)) {
+    throw new Error(
+      [
+        `Developer ID identity was not found in the local keychain: ${identity}`,
+        'Install the Developer ID Application certificate and private key, then retry with:',
+        '  FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" npm run desktop:resources:managed-developer-id-sign-check',
+        'Available signing identities reported by security:',
+        identities.output.trim() || '(none)'
+      ].join('\n')
+    );
+  }
+}
+
+function isMachODescription(description) {
+  return description.startsWith('Mach-O') || description.startsWith('universal binary');
+}
+
+function signingDepth(filePath, root) {
+  return path.relative(root, filePath).split(path.sep).length;
+}
+
+async function inspectMachOFile(filePath) {
+  const fileResult = await runResult('file', ['-b', filePath]);
+  if (fileResult.code !== 0 || !isMachODescription(fileResult.stdout.trim())) {
+    return null;
+  }
+
+  const signature = await runResult('codesign', ['--verify', '--verbose=1', filePath]);
+  return {
+    path: filePath,
+    description: fileResult.stdout.trim(),
+    signed: signature.code === 0,
+    signatureOutput: signature.output.trim()
+  };
+}
+
+async function collectMachOSigningInventory(root) {
+  const files = [];
+
+  await walkFiles(root, async (filePath, entryStat) => {
+    if (entryStat.isDirectory() || entryStat.isSymbolicLink()) {
+      return;
+    }
+
+    const shouldInspect = isLikelyNativeFile(filePath) || (entryStat.mode & 0o111) !== 0;
+    if (!shouldInspect) {
+      return;
+    }
+
+    const inspected = await inspectMachOFile(filePath);
+    if (inspected) {
+      files.push(inspected);
+    }
+  });
+
+  files.sort((left, right) => {
+    const depth = signingDepth(right.path, root) - signingDepth(left.path, root);
+    return depth || path.relative(root, left.path).localeCompare(path.relative(root, right.path));
+  });
+
+  return files;
+}
+
+function logMachOSigningInventory(root, files) {
+  const unsigned = files.filter((file) => !file.signed);
+  console.log(`[formic-rehearsal] Mach-O signing inventory root: ${displayPath(root)}`);
+  console.log(`[formic-rehearsal] Mach-O/signable files: ${files.length} total, ${unsigned.length} currently unsigned`);
+  console.log('[formic-rehearsal] Intended signing order: electron-builder signs the app, then python-runtime Mach-O files deepest-first, then the outer .app is re-signed and verified.');
+
+  const sampleFiles = files.slice(0, 12);
+  if (sampleFiles.length > 0) {
+    console.log('[formic-rehearsal] Sample signing order:');
+    for (const file of sampleFiles) {
+      console.log(`  - ${path.relative(root, file.path)}${file.signed ? ' (already signed)' : ' (unsigned)'}`);
+    }
+  }
+
+  const sampleUnsigned = unsigned.slice(0, 12);
+  if (sampleUnsigned.length > 0) {
+    console.log('[formic-rehearsal] Sample unsigned Mach-O files:');
+    for (const file of sampleUnsigned) {
+      console.log(`  - ${path.relative(root, file.path)}`);
+    }
+  }
+}
+
+async function managedSigningPreflight(options) {
+  if (process.platform !== 'darwin') {
+    throw new Error('The managed signing preflight currently expects macOS codesign/file tooling.');
+  }
+
+  const packagedApp = await packageResourcesApp(options, { managed: true });
+  const audit = await auditBundle({ ...options, bundleDir: packagedApp.serverDir });
+  const runtimeDir = path.join(packagedApp.serverDir, 'python-runtime');
+  const machOFiles = await collectMachOSigningInventory(runtimeDir);
+  logMachOSigningInventory(runtimeDir, machOFiles);
+
+  const identity = developerIdIdentityFromEnv();
+  console.log(`[formic-rehearsal] Developer ID identity: ${identity || '(not configured)'}`);
+  console.log('[formic-rehearsal] Notarization credentials are intentionally not read by this checkpoint.');
+
+  return { packagedApp, audit, machOFiles };
+}
+
+async function signPathWithDeveloperId(filePath, identity, entitlementsPath) {
+  const args = ['--force', '--timestamp', '--options', 'runtime', '--sign', identity];
+  if (entitlementsPath) {
+    args.push('--entitlements', entitlementsPath);
+  }
+  args.push(filePath);
+  await run('codesign', args);
+}
+
+async function runSpctlDiagnostic(appDir) {
+  const result = await runResult('spctl', ['--assess', '--type', 'execute', '--verbose=4', appDir]);
+  const output = result.output.trim();
+  console.log(`[formic-rehearsal] spctl diagnostic exit code: ${result.code ?? 'null'}`);
+  if (output) {
+    console.log(output);
+  }
+  console.log('[formic-rehearsal] spctl is diagnostic only before notarization; this checkpoint does not require Gatekeeper acceptance.');
+}
+
+async function developerIdSignCheck(options) {
+  if (process.platform !== 'darwin') {
+    throw new Error('The Developer ID signing check currently expects macOS codesign.');
+  }
+
+  const preflight = await managedSigningPreflight(options);
+  const identity = developerIdIdentityFromEnv();
+  await assertDeveloperIdIdentity(identity);
+
+  console.log(`[formic-rehearsal] Developer ID signing identity: ${identity}`);
+  console.log('[formic-rehearsal] Packaging with hardened runtime enabled through electron-builder.');
+  const packagedApp = await packageResourcesApp(options, {
+    managed: true,
+    signingMode: 'developer-id',
+    identity
+  });
+  await auditBundle({ ...options, bundleDir: packagedApp.serverDir });
+
+  const runtimeDir = path.join(packagedApp.serverDir, 'python-runtime');
+  const machOFiles = await collectMachOSigningInventory(runtimeDir);
+  logMachOSigningInventory(runtimeDir, machOFiles);
+
+  for (const file of machOFiles) {
+    await signPathWithDeveloperId(file.path, identity, inheritedEntitlementsPath);
+  }
+
+  await signPathWithDeveloperId(packagedApp.appDir, identity, mainEntitlementsPath);
+  await run('codesign', ['--verify', '--deep', '--strict', '--verbose=4', packagedApp.appDir]);
+  await runSpctlDiagnostic(packagedApp.appDir);
+
+  await smokePackagedApp(packagedApp, options, {
+    managed: true,
+    runtimeName: 'resources-managed-developer-id-sign-smoke'
+  });
+  console.log('[formic-rehearsal] Developer ID signing check passed; notarization was not attempted.');
+
+  return preflight;
 }
 
 async function smokeBundle(
@@ -1146,6 +1370,16 @@ async function runCommand(options) {
 
   if (options.command === 'resources-managed-adhoc-sign-check') {
     await localOnlyAdHocSignCheck(options);
+    return;
+  }
+
+  if (options.command === 'resources-managed-signing-preflight') {
+    await managedSigningPreflight(options);
+    return;
+  }
+
+  if (options.command === 'resources-managed-developer-id-sign-check') {
+    await developerIdSignCheck(options);
     return;
   }
 

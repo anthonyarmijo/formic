@@ -128,6 +128,26 @@ npm run desktop:resources:managed-adhoc-sign-check
 
 This command packages the managed runtime under `Contents/Resources/formic-server`, audits the packaged Python artifact, runs `codesign --force --deep --sign -` on the local `.app`, and verifies it with `codesign --verify --deep --strict`. It is only a local packaging sanity check. It is not Developer ID signing, does not notarize the app, and does not prove Gatekeeper acceptance.
 
+## Developer ID Signing Rehearsal
+
+The credential-optional signing preflight packages the managed runtime and inventories the Python Mach-O payload without requiring Apple credentials:
+
+```sh
+npm run desktop:resources:managed-signing-preflight
+```
+
+The preflight packages `python-runtime/` under `Contents/Resources/formic-server`, runs the existing artifact audit, reports sidecar size/native payload counts, checks which Mach-O files are currently unsigned, and prints the intended signing order. It does not sign, notarize, staple, or read notarization credentials.
+
+When a local Developer ID Application certificate and private key are available, run:
+
+```sh
+FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" npm run desktop:resources:managed-developer-id-sign-check
+```
+
+`CSC_NAME` is accepted as a fallback identity variable. The command packages the managed app with `FORMIC_ELECTRON_BUILDER_SIGNING_MODE=developer-id`, enables hardened runtime, uses the tracked minimal Electron entitlements, signs Python runtime Mach-O files deepest-first, re-signs the outer `.app`, verifies with `codesign --verify --deep --strict --verbose=4`, runs `spctl --assess --type execute --verbose=4` as diagnostic-only, and then launches the signed app with no `FORMIC_SERVER_BUNDLE_DIR`.
+
+If no Developer ID identity is configured, the Developer ID command intentionally runs the preflight and then fails with setup instructions. It never falls back to ad-hoc signing. This checkpoint still does not notarize, staple, create a DMG, or prove Gatekeeper acceptance.
+
 ## Python Artifact Audit
 
 The signed-app Python decision is now captured by a repeatable, non-destructive audit against the existing rehearsal bundle:
@@ -189,6 +209,8 @@ Works:
 - `npm run desktop:bundle:managed-smoke -- --clean` proves a self-contained `python-runtime/` server artifact can launch the FastAPI sidecar without a `.venv` or user-home Python symlink.
 - `npm run desktop:resources:managed-smoke` proves the same managed artifact works from `Formic.app/Contents/Resources/formic-server` with no `FORMIC_SERVER_BUNDLE_DIR`.
 - `npm run desktop:resources:managed-adhoc-sign-check` proves this local unsigned rehearsal layout can be ad-hoc signed and verified with recursive `codesign --deep`; this does not change the Developer ID/notarization requirement.
+- `npm run desktop:resources:managed-signing-preflight` inventories the managed packaged app's Python Mach-O payload and intended signing order without Apple credentials.
+- `npm run desktop:resources:managed-developer-id-sign-check` is the credential-gated hardened-runtime signing dry run; it still does not notarize or staple.
 
 Still flaky:
 
@@ -196,6 +218,6 @@ Still flaky:
 - The copied `.venv` packaged resources rehearsal uses the current machine's uv-created `.venv`; it relocated successfully into the local `.app` resources path and a second path with spaces on this machine, but the audit shows the Python executable is still an absolute symlink to the local uv-managed runtime outside the bundle.
 - The smoke command verifies the API sidecar path with an `about:blank` renderer URL. It does not prove the full packaged renderer, installer, updater, signing, or notarization path.
 - electron-builder warns that arm64 macOS normally requires signing; this rehearsal intentionally skips signing with `identity: null`.
-- The local ad-hoc signing check proves the current filesystem layout is signable on this machine, but packaged builds still need a real recursive Developer ID signing recipe, hardened runtime/entitlements decisions, notarization, stapling, and a final decision on whether the Docker/external fallback becomes user-facing.
+- The local ad-hoc signing check proves the current filesystem layout is signable on this machine, while the Developer ID rehearsal is the first real hardened-runtime signing gate. Packaged builds still need notarization, stapling, Gatekeeper verification after notarization, and a final decision on whether the Docker/external fallback becomes user-facing.
 
-Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, and use the managed `python-runtime/` artifact as the primary path. The copied uv `.venv` can be retired from the primary packaging path and kept only as a comparison/regression rehearsal. The next proof should replace the local ad-hoc `codesign --deep` check with an explicit Developer ID signing plan for every Mach-O/native payload, including hardened runtime and notarization dry-run preparation. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.
+Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, and use the managed `python-runtime/` artifact as the primary path. The copied uv `.venv` can be retired from the primary packaging path and kept only as a comparison/regression rehearsal. The next proof after Developer ID signing should upload the signed artifact to Apple's notary service, inspect the notary log, staple the ticket, and repeat Gatekeeper assessment. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.
