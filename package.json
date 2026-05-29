@@ -15,6 +15,8 @@
 		"desktop:bundle:audit": "node scripts/desktop-bundle-rehearsal.mjs audit",
 		"desktop:bundle:smoke": "node scripts/desktop-bundle-rehearsal.mjs smoke",
 		"desktop:bundle:relocation-smoke": "node scripts/desktop-bundle-rehearsal.mjs relocation-smoke",
+		"desktop:bundle:managed-build": "node scripts/desktop-bundle-rehearsal.mjs managed-build",
+		"desktop:bundle:managed-smoke": "node scripts/desktop-bundle-rehearsal.mjs managed-smoke",
 		"desktop:resources:package": "node scripts/desktop-bundle-rehearsal.mjs resources-package",
 		"desktop:resources:smoke": "node scripts/desktop-bundle-rehearsal.mjs resources-smoke",
 		"dev:5050": "npm run pyodide:fetch && vite dev --port 5050",

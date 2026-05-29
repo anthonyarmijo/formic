@@ -90,6 +90,18 @@ npm run desktop:bundle:relocation-smoke -- --clean
 
 That smoke passes on this machine and verifies `/health`, `/ready`, and `/api/version`, but the audit explains why the pass is not enough for distribution: the interpreter is still the local uv-managed runtime, not an interpreter shipped inside the `.app`.
 
+## Managed Python Runtime
+
+The smallest self-contained server payload proof now copies uv-managed CPython 3.11 into the bundle and installs the frozen dependencies directly into that copied runtime:
+
+```sh
+npm run desktop:bundle:managed-smoke -- --clean
+```
+
+The managed bundle removes `.venv`/`venv`, writes `python-runtime/`, exports the lockfile to `requirements.lock.txt`, installs with `uv pip install --system --break-system-packages --link-mode copy`, and launches Electron against `python-runtime/bin/python3.11`.
+
+Current result: Electron reports `FORMIC_SERVER_BUNDLE_DIR managed Python runtime`, the selected Python resolves inside `formic-server`, and `/health`, `/ready`, and `/api/version` pass. This makes managed-runtime the Phase 0 packaging strategy to keep proving. Remaining signing risks are the large runtime/dependency payload, hundreds of native libraries, and generated console scripts with absolute shebangs; the sidecar launch itself avoids those scripts by using `python -m uvicorn`.
+
 ## Decision Notes
 
 - The Electron shell can check for an already-running backend before spawning its own process.
@@ -117,11 +129,12 @@ That smoke passes on this machine and verifies `/health`, `/ready`, and `/api/ve
 - `npm run desktop:resources:smoke` now proves the same API sidecar works from the packaged app resources path with no `FORMIC_SERVER_BUNDLE_DIR`.
 - `npm run desktop:bundle:audit` now reports the copied `.venv` as a local rehearsal artifact, not a shippable Python payload: Python resolves outside the bundle, console scripts contain absolute build-path shebangs, and hundreds of native libraries remain to be signed.
 - `npm run desktop:bundle:relocation-smoke -- --clean` now proves launcher path handling from a copied bundle path with spaces.
+- `npm run desktop:bundle:managed-smoke -- --clean` now proves Electron can launch the API sidecar from an in-bundle managed `python-runtime/` with no `.venv` or user-home Python symlink.
 
 ## Current Packaging Read
 
-Recommended path: keep pursuing a bundled Python sidecar as the Phase 0 default because the current app shape already needs a local FastAPI process for desktop parity. Keep the `formic-server` layout and Electron launcher, but switch the final artifact strategy away from a raw copied uv-created `.venv` toward a platform-specific payload with an in-bundle managed Python runtime and locked dependencies installed against that runtime.
+Recommended path: keep pursuing a bundled Python sidecar as the Phase 0 default because the current app shape already needs a local FastAPI process for desktop parity. Keep the `formic-server` layout and Electron launcher, and use the managed `python-runtime/` payload as the primary artifact strategy instead of a raw copied uv-created `.venv`.
 
 Fallback path: keep `FORMIC_SERVER_MODE=external` for Docker or a user-managed server. Do not make this the primary desktop story unless the bundled-venv rehearsal fails on clean machines.
 
-Remaining blocker for a real packaged `.app`: build a self-contained macOS arm64 server payload with Python inside `Contents/Resources/formic-server`, then run recursive local signing verification before attempting Developer ID signing/notarization. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough.
+Remaining blocker for a real packaged `.app`: package the managed `python-runtime/` payload under `Contents/Resources/formic-server`, then run recursive local signing verification before attempting Developer ID signing/notarization. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough.

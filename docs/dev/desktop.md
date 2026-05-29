@@ -129,6 +129,24 @@ npm run desktop:bundle:relocation-smoke -- --clean
 
 The command builds the server bundle, copies it under `build/desktop-rehearsal/relocation path with spaces/formic-server`, audits the relocated copy, launches Electron with that relocated `FORMIC_SERVER_BUNDLE_DIR`, and verifies `/health`, `/ready`, and `/api/version`. Passing this test proves the current launcher path handling is sound on this machine; it does not prove the copied `.venv` will run on a clean Mac because the Python executable still resolves outside the bundle.
 
+## Managed Python Runtime Rehearsal
+
+The next Phase 0 artifact proof creates a self-contained server bundle without a copied `.venv`:
+
+```sh
+npm run desktop:bundle:managed-smoke -- --clean
+```
+
+The managed-runtime rehearsal:
+
+- copies the resolved uv-managed CPython 3.11 install into `build/desktop-rehearsal/formic-server/python-runtime`.
+- exports the frozen lockfile to `requirements.lock.txt`.
+- installs locked dependencies into that copied runtime with `uv pip install --system --break-system-packages --link-mode copy`.
+- removes `.venv`/`venv` so Electron must launch `python-runtime/bin/python3.11`.
+- audits the runtime and verifies `/health`, `/ready`, and `/api/version`.
+
+Current result on macOS arm64: Electron launches `FORMIC_SERVER_BUNDLE_DIR managed Python runtime`, and `python-runtime/bin/python3.11` resolves inside `formic-server`. This proves the sidecar no longer depends on a user-home uv Python symlink. The remaining risks are size, hundreds of native `.so`/`.dylib` files that need recursive signing, and generated console scripts with absolute shebangs. Electron does not use those console scripts for the sidecar path because it launches `python -m uvicorn` directly.
+
 ## Current Reliability Notes
 
 Works:
@@ -142,13 +160,15 @@ Works:
 - `npm run desktop:resources:smoke` verifies the unsigned packaged `.app` launches from `Contents/Resources/formic-server` with no `FORMIC_SERVER_BUNDLE_DIR`.
 - `npm run desktop:bundle:audit` makes `.venv` relocation/signing risks visible without mutating the rehearsal output.
 - `npm run desktop:bundle:relocation-smoke -- --clean` verifies Electron can launch the sidecar from a copied bundle path with spaces.
+- `npm run desktop:bundle:managed-smoke -- --clean` proves a self-contained `python-runtime/` server artifact can launch the FastAPI sidecar without a `.venv` or user-home Python symlink.
 
 Still flaky:
 
 - First-run local backend startup can still be slow when dependency/model caches are cold.
 - The packaged resources rehearsal uses the current machine's uv-created `.venv`; it relocated successfully into the local `.app` resources path and a second path with spaces on this machine, but the audit shows the Python executable is still an absolute symlink to the local uv-managed runtime outside the bundle.
+- The managed-runtime rehearsal is self-contained at the `formic-server` directory level, but the unsigned packaged `.app` rehearsal still uses the older `.venv` build path until a managed resources smoke is added.
 - The smoke command verifies the API sidecar path with an `about:blank` renderer URL. It does not prove the full packaged renderer, installer, updater, signing, or notarization path.
 - electron-builder warns that arm64 macOS normally requires signing; this rehearsal intentionally skips signing with `identity: null`.
 - Packaged builds still need signing, notarization, and a final decision on whether the Docker/external fallback becomes user-facing.
 
-Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, but stop treating a copied uv-created `.venv` as the final artifact. The next proof should build a platform-specific server payload with an in-bundle Python runtime, then recreate/install the locked dependencies against that runtime before recursive signing. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.
+Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, and continue with the managed `python-runtime/` artifact as the primary path. The next proof should package that managed runtime under `Contents/Resources/formic-server`, then run local recursive signing verification before Developer ID signing/notarization. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.

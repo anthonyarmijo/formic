@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { copyFile, cp, lstat, mkdir, readdir, readFile, readlink, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, lstat, mkdir, readdir, readFile, readlink, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +13,7 @@ const defaultRelocationDir = path.join(repoRoot, 'build', 'desktop-rehearsal', '
 const defaultRuntimeDir = path.join(repoRoot, 'build', 'desktop-rehearsal', 'runtime-data');
 const defaultPort = 18080;
 const defaultTimeoutMs = 180000;
+const managedPythonRequest = '3.11';
 
 const rootContextFiles = [
   'pyproject.toml',
@@ -95,7 +96,19 @@ function parseArgs(argv) {
     }
   }
 
-  if (!['build', 'smoke', 'resources-package', 'resources-smoke', 'audit', 'relocation-smoke', 'print-path'].includes(options.command)) {
+  if (
+    ![
+      'build',
+      'smoke',
+      'resources-package',
+      'resources-smoke',
+      'audit',
+      'relocation-smoke',
+      'managed-build',
+      'managed-smoke',
+      'print-path'
+    ].includes(options.command)
+  ) {
     throw new Error(`Unknown command: ${options.command}`);
   }
 
@@ -110,6 +123,35 @@ function pythonPathForBundle(bundleDir) {
   return process.platform === 'win32'
     ? path.join(bundleDir, '.venv', 'Scripts', 'python.exe')
     : path.join(bundleDir, '.venv', 'bin', 'python');
+}
+
+function managedPythonPathForBundle(bundleDir) {
+  return process.platform === 'win32'
+    ? path.join(bundleDir, 'python-runtime', 'python.exe')
+    : path.join(bundleDir, 'python-runtime', 'bin', `python${managedPythonRequest}`);
+}
+
+async function selectedPythonPathForBundle(bundleDir) {
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          path.join(bundleDir, '.venv', 'Scripts', 'python.exe'),
+          path.join(bundleDir, 'venv', 'Scripts', 'python.exe'),
+          managedPythonPathForBundle(bundleDir)
+        ]
+      : [
+          path.join(bundleDir, '.venv', 'bin', 'python'),
+          path.join(bundleDir, 'venv', 'bin', 'python'),
+          managedPythonPathForBundle(bundleDir)
+        ];
+
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return candidates[0];
 }
 
 function formatBytes(bytes) {
@@ -191,7 +233,7 @@ async function copyFilePreservingMode(source, destination) {
   await copyFile(source, destination);
 
   const sourceStat = await stat(source);
-  await import('node:fs/promises').then(({ chmod }) => chmod(destination, sourceStat.mode));
+  await chmod(destination, sourceStat.mode);
 }
 
 async function copyTrackedBackend(bundleDir) {
@@ -225,7 +267,7 @@ async function validateBundle(bundleDir) {
     }
   }
 
-  const pythonPath = pythonPathForBundle(bundleDir);
+  const pythonPath = await selectedPythonPathForBundle(bundleDir);
   if (!(await pathExists(pythonPath))) {
     missing.push(path.relative(bundleDir, pythonPath));
   }
@@ -245,6 +287,8 @@ async function validateBundle(bundleDir) {
 async function writeManifest(bundleDir, backendFileCount) {
   const commit = (await run('git', ['rev-parse', '--short=12', 'HEAD'], { stdio: 'pipe' })).trim();
   const packageData = JSON.parse(await readFile(path.join(bundleDir, 'package.json'), 'utf8'));
+  const pythonPath = await selectedPythonPathForBundle(bundleDir);
+  const hasManagedRuntime = await pathExists(managedPythonPathForBundle(bundleDir));
   const manifest = {
     name: 'formic-server',
     rehearsal: true,
@@ -253,8 +297,11 @@ async function writeManifest(bundleDir, backendFileCount) {
     sourceCommit: commit,
     version: packageData.version,
     backendFileCount,
-    python: path.relative(bundleDir, pythonPathForBundle(bundleDir)),
-    contains: ['backend/', 'pyproject.toml', 'uv.lock', '.venv/']
+    python: path.relative(bundleDir, pythonPath),
+    pythonStrategy: hasManagedRuntime ? 'managed-runtime' : 'uv-venv',
+    contains: hasManagedRuntime
+      ? ['backend/', 'pyproject.toml', 'uv.lock', 'python-runtime/']
+      : ['backend/', 'pyproject.toml', 'uv.lock', '.venv/']
   };
 
   await writeFile(path.join(bundleDir, 'bundle-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -309,6 +356,107 @@ async function buildBundle(options) {
   return bundleDir;
 }
 
+async function uvManagedPythonRoot() {
+  const output = await run('uv', ['python', 'find', managedPythonRequest, '--managed-python', '--no-project', '--resolve-links'], {
+    stdio: 'pipe'
+  });
+  const interpreterPath = output.trim();
+
+  if (!interpreterPath) {
+    throw new Error(`uv did not return a managed Python ${managedPythonRequest} interpreter path.`);
+  }
+
+  return path.resolve(interpreterPath, '..', '..');
+}
+
+async function buildManagedRuntimeBundle(options) {
+  const bundleDir = path.resolve(options.bundleDir);
+  const runtimeDir = path.join(bundleDir, 'python-runtime');
+  const requirementsPath = path.join(bundleDir, 'requirements.lock.txt');
+
+  if (options.clean) {
+    await rm(bundleDir, { recursive: true, force: true });
+  }
+
+  await mkdir(bundleDir, { recursive: true });
+  const backendFileCount = await copyTrackedBackend(bundleDir);
+  await copyRootContext(bundleDir);
+  await rm(path.join(bundleDir, '.venv'), { recursive: true, force: true });
+  await rm(path.join(bundleDir, 'venv'), { recursive: true, force: true });
+  await rm(runtimeDir, { recursive: true, force: true });
+
+  const sourceRuntimeDir = await uvManagedPythonRoot();
+  await cp(sourceRuntimeDir, runtimeDir, {
+    recursive: true,
+    dereference: false,
+    verbatimSymlinks: true
+  });
+
+  await run(
+    'uv',
+    [
+      'export',
+      '--frozen',
+      '--project',
+      bundleDir,
+      '--format',
+      'requirements.txt',
+      '--no-dev',
+      '--no-emit-project',
+      '--output-file',
+      requirementsPath
+    ],
+    { cwd: bundleDir, stdio: 'pipe' }
+  );
+
+  await run('uv', [
+    'pip',
+    'install',
+    '--system',
+    '--break-system-packages',
+    '--python',
+    managedPythonPathForBundle(bundleDir),
+    '--requirements',
+    requirementsPath,
+    '--link-mode',
+    'copy'
+  ]);
+
+  await validateBundle(bundleDir);
+
+  const importCheckDataDir = path.join(defaultRuntimeDir, 'managed-import-check-data');
+  const importCheckStaticDir = path.join(defaultRuntimeDir, 'managed-import-check-static');
+  await mkdir(importCheckDataDir, { recursive: true });
+  await mkdir(importCheckStaticDir, { recursive: true });
+
+  await run(
+    managedPythonPathForBundle(bundleDir),
+    [
+      '-c',
+      [
+        'import fastapi, pydantic, sqlalchemy, starsessions, uvicorn',
+        'print("managed runtime dependency imports ok")'
+      ].join('; ')
+    ],
+    {
+      cwd: bundleDir,
+      env: {
+        ...process.env,
+        DATA_DIR: importCheckDataDir,
+        FORMIC_DESKTOP: 'true',
+        FORMIC_LAZY_EMBEDDINGS: 'true',
+        PYTHONPATH: path.join(bundleDir, 'backend'),
+        STATIC_DIR: importCheckStaticDir
+      }
+    }
+  );
+
+  await writeManifest(bundleDir, backendFileCount);
+  console.log(`[formic-rehearsal] Managed runtime copied from: ${sourceRuntimeDir}`);
+  console.log(`[formic-rehearsal] Managed runtime bundle ready: ${displayPath(bundleDir)}`);
+  return bundleDir;
+}
+
 function isInsidePath(candidate, root) {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
@@ -332,7 +480,8 @@ function isLikelyTextFile(filePath) {
     extension === '.txt' ||
     extension === '.json' ||
     extension === '.toml' ||
-    filePath.includes(`${path.sep}.venv${path.sep}bin${path.sep}`)
+    filePath.includes(`${path.sep}.venv${path.sep}bin${path.sep}`) ||
+    filePath.includes(`${path.sep}python-runtime${path.sep}bin${path.sep}`)
   );
 }
 
@@ -346,11 +495,17 @@ async function auditBundle(options) {
   const bundleDir = path.resolve(options.bundleDir);
   await validateBundle(bundleDir);
 
+  const pythonPath = await selectedPythonPathForBundle(bundleDir);
+  const managedRuntimeDir = path.join(bundleDir, 'python-runtime');
   const venvDir = path.join(bundleDir, '.venv');
-  const venvStat = await stat(venvDir);
+  const artifactDir = (await pathExists(managedRuntimeDir)) ? managedRuntimeDir : venvDir;
+  const artifactStat = await stat(artifactDir);
+  const artifactLabel = path.relative(bundleDir, artifactDir);
   const audit = {
     bundleDir,
-    python: pythonPathForBundle(bundleDir),
+    artifactDir,
+    artifactLabel,
+    python: pythonPath,
     pythonRealPath: null,
     fileCount: 0,
     directoryCount: 1,
@@ -360,7 +515,7 @@ async function auditBundle(options) {
     externalSymlinkCount: 0,
     executableFileCount: 0,
     nativeFileCount: 0,
-    totalBytes: venvStat.size,
+    totalBytes: artifactStat.size,
     absoluteReferenceCount: 0,
     absoluteShebangCount: 0,
     bundlePathReferenceCount: 0,
@@ -379,7 +534,7 @@ async function auditBundle(options) {
     audit.pythonRealPath = null;
   }
 
-  await walkFiles(venvDir, async (filePath, entryStat) => {
+  await walkFiles(artifactDir, async (filePath, entryStat) => {
     const relative = path.relative(bundleDir, filePath);
     audit.totalBytes += entryStat.size;
 
@@ -471,13 +626,16 @@ async function auditBundle(options) {
     risks.push(`${audit.nativeFileCount} native library file(s) will need recursive Developer ID signing.`);
   }
   if (audit.totalBytes > 1024 * 1024 * 1024) {
-    risks.push(`The copied .venv is large (${formatBytes(audit.totalBytes)}), before installer compression or pruning.`);
+    risks.push(`The Python artifact is large (${formatBytes(audit.totalBytes)}), before installer compression or pruning.`);
   }
 
   console.log(`[formic-rehearsal] Bundle audit: ${displayPath(bundleDir)}`);
+  console.log(`[formic-rehearsal] Python artifact: ${artifactLabel}`);
   console.log(`[formic-rehearsal] Python: ${path.relative(bundleDir, audit.python)}`);
   console.log(`[formic-rehearsal] Python real path: ${audit.pythonRealPath ?? 'unresolved'}`);
-  console.log(`[formic-rehearsal] .venv: ${formatBytes(audit.totalBytes)}, ${audit.fileCount} files, ${audit.directoryCount} directories`);
+  console.log(
+    `[formic-rehearsal] ${artifactLabel}: ${formatBytes(audit.totalBytes)}, ${audit.fileCount} files, ${audit.directoryCount} directories`
+  );
   console.log(`[formic-rehearsal] Symlinks: ${audit.symlinkCount} total, ${audit.absoluteSymlinkCount} absolute, ${audit.externalSymlinkCount} external, ${audit.brokenSymlinkCount} broken`);
   console.log(`[formic-rehearsal] Executables/native: ${audit.executableFileCount} executable files, ${audit.nativeFileCount} native library files`);
   console.log(
@@ -771,7 +929,12 @@ async function smokePackagedResources(options) {
   }
 }
 
-async function smokeBundle(options, bundleOverride = null, runtimeName = `smoke-${options.port}`) {
+async function smokeBundle(
+  options,
+  bundleOverride = null,
+  runtimeName = `smoke-${options.port}`,
+  expectedLaunchMarker = 'FORMIC_SERVER_BUNDLE_DIR venv'
+) {
   const bundleDir = bundleOverride ?? (await buildBundle(options));
   await run('npm', ['run', 'build', '--workspace', '@formic/desktop']);
   await ensurePortAvailable(options.port);
@@ -843,14 +1006,26 @@ async function smokeBundle(options, bundleOverride = null, runtimeName = `smoke-
 
     assertNoStartupFailureOutput(output);
 
-    if (!output.includes('FORMIC_SERVER_BUNDLE_DIR venv')) {
-      throw new Error('Electron did not report the FORMIC_SERVER_BUNDLE_DIR venv launch plan.');
+    if (!output.includes(expectedLaunchMarker)) {
+      throw new Error(`Electron did not report the expected launch plan: ${expectedLaunchMarker}`);
     }
 
     console.log(`[formic-rehearsal] Smoke passed: /health, /ready, /api/version=${version.version}`);
   } finally {
     await stopProcessGroup(electron);
   }
+}
+
+async function smokeManagedRuntimeBundle(options) {
+  const bundleDir = await buildManagedRuntimeBundle(options);
+  await auditBundle({ ...options, bundleDir });
+  await smokeBundle(
+    { ...options, bundleDir, clean: false, skipSync: true },
+    bundleDir,
+    `managed-smoke-${options.port}`,
+    'FORMIC_SERVER_BUNDLE_DIR managed Python runtime'
+  );
+  console.log('[formic-rehearsal] Managed runtime smoke passed with in-bundle Python.');
 }
 
 async function smokeRelocatedBundle(options) {
@@ -886,6 +1061,11 @@ async function main() {
     return;
   }
 
+  if (options.command === 'managed-build') {
+    await buildManagedRuntimeBundle(options);
+    return;
+  }
+
   if (options.command === 'audit') {
     await auditBundle(options);
     return;
@@ -903,6 +1083,11 @@ async function main() {
 
   if (options.command === 'relocation-smoke') {
     await smokeRelocatedBundle(options);
+    return;
+  }
+
+  if (options.command === 'managed-smoke') {
+    await smokeManagedRuntimeBundle(options);
     return;
   }
 

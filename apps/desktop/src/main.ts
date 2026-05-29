@@ -107,17 +107,34 @@ function findBundledPython(root: string): string | null {
     process.platform === 'win32'
       ? [
           path.join(root, '.venv', 'Scripts', 'python.exe'),
-          path.join(root, 'venv', 'Scripts', 'python.exe')
+          path.join(root, 'venv', 'Scripts', 'python.exe'),
+          path.join(root, 'python-runtime', 'python.exe')
         ]
-      : [path.join(root, '.venv', 'bin', 'python'), path.join(root, 'venv', 'bin', 'python')];
+      : [
+          path.join(root, '.venv', 'bin', 'python'),
+          path.join(root, 'venv', 'bin', 'python'),
+          path.join(root, 'python-runtime', 'bin', 'python3.11'),
+          path.join(root, 'python-runtime', 'bin', 'python3'),
+          path.join(root, 'python-runtime', 'bin', 'python')
+        ];
 
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
 function bundledPythonCandidates(root: string): string[] {
   return process.platform === 'win32'
-    ? [path.join(root, '.venv', 'Scripts', 'python.exe'), path.join(root, 'venv', 'Scripts', 'python.exe')]
-    : [path.join(root, '.venv', 'bin', 'python'), path.join(root, 'venv', 'bin', 'python')];
+    ? [
+        path.join(root, '.venv', 'Scripts', 'python.exe'),
+        path.join(root, 'venv', 'Scripts', 'python.exe'),
+        path.join(root, 'python-runtime', 'python.exe')
+      ]
+    : [
+        path.join(root, '.venv', 'bin', 'python'),
+        path.join(root, 'venv', 'bin', 'python'),
+        path.join(root, 'python-runtime', 'bin', 'python3.11'),
+        path.join(root, 'python-runtime', 'bin', 'python3'),
+        path.join(root, 'python-runtime', 'bin', 'python')
+      ];
 }
 
 function missingServerRootFiles(root: string, backendDir: string): string[] {
@@ -158,12 +175,19 @@ function buildServerLaunchPlan(): ServerLaunchPlan {
   }
 
   if (bundledPython) {
+    const isManagedRuntime = bundledPython.includes(`${path.sep}python-runtime${path.sep}`);
     return {
       command: bundledPython,
       args: ['-m', 'uvicorn'],
       cwd: serverRoot,
       backendDir,
-      source: process.env.FORMIC_SERVER_BUNDLE_DIR ? 'FORMIC_SERVER_BUNDLE_DIR venv' : 'bundled venv'
+      source: process.env.FORMIC_SERVER_BUNDLE_DIR
+        ? isManagedRuntime
+          ? 'FORMIC_SERVER_BUNDLE_DIR managed Python runtime'
+          : 'FORMIC_SERVER_BUNDLE_DIR venv'
+        : isManagedRuntime
+          ? 'bundled managed Python runtime'
+          : 'bundled venv'
     };
   }
 
