@@ -188,7 +188,7 @@ npm run desktop:resources:managed-notarization-check
 
 The command keeps all output under `build/desktop-rehearsal`. electron-builder notarization is explicitly disabled for this rehearsal so the script owns the notarization sequence. It packages the managed `.app`, signs it with Developer ID and hardened runtime, verifies `codesign --verify --deep --strict --verbose=4`, creates `build/desktop-rehearsal/notarization/Formic-notarization.zip` with `ditto --keepParent`, runs `xcrun notarytool submit --wait`, staples the accepted ticket to the `.app`, validates the staple, requires `spctl --assess --type execute --verbose=4` to pass, launches the stapled app with no `FORMIC_SERVER_BUNDLE_DIR` while probing `/health`, `/ready`, and `/api/version`, then verifies the code signature again after launch.
 
-If notarization credentials are missing or incomplete, the command fails before packaging with setup instructions. The preflight and Developer ID signing-only commands do not read or require notarization credentials.
+If notarization credentials are missing, incomplete, or rejected by `notarytool`, the command fails before packaging with setup instructions. The preflight and Developer ID signing-only commands do not read or require notarization credentials.
 
 ### Phase 0 Release-Readiness Checkpoint
 
@@ -209,7 +209,7 @@ Successful evidence captured from that run:
 
 The API-only rehearsal uses `FORMIC_RENDERER_URL=about:blank` to keep the smoke scoped to the backend sidecar. Electron now treats that URL as an explicit renderer-load skip after backend readiness, so a successful API-only smoke is distinct from a full renderer smoke and no longer emits `Renderer startup failed: ERR_FAILED (-2) loading 'about:blank'` during intentional teardown. The rehearsal fails if future output includes a renderer startup failure or unhandled promise rejection.
 
-On May 29, 2026, a fresh notarization rerun prepared the same artifact shape (`Formic-notarization.zip`, 608.6 MB / `638134193` bytes) but stopped before submission because `notarytool` could not find the `formic-notary` keychain password item. That is a local credential-state issue, not a signing or packaging regression. Recreate the profile with `xcrun notarytool store-credentials formic-notary`, then rerun the command above to refresh the live Apple notarization evidence.
+On May 29, 2026, a fresh notarization rerun prepared the same artifact shape (`Formic-notarization.zip`, 608.6 MB / `638134193` bytes) but stopped before submission because `notarytool` could not find the `formic-notary` keychain password item. That is a local credential-state issue, not a signing or packaging regression. The rehearsal now checks `notarytool history` before packaging so this condition fails fast. Recreate the profile with `xcrun notarytool store-credentials formic-notary`, then rerun the command above to refresh the live Apple notarization evidence.
 
 ## Python Artifact Audit
 

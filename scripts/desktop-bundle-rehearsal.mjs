@@ -1289,6 +1289,7 @@ function notarizationCredentialArgsFromEnv() {
   if (keychainProfile) {
     return {
       mode: 'notarytool keychain profile',
+      profileName: keychainProfile,
       args: ['--keychain-profile', keychainProfile]
     };
   }
@@ -1398,6 +1399,33 @@ async function assertXcrunTool(toolName) {
   }
 }
 
+async function assertNotarizationCredentialsUsable(credentials) {
+  console.log(`[formic-rehearsal] Validating notarization credentials with ${credentials.mode}.`);
+  const result = await runResult('xcrun', [
+    'notarytool',
+    'history',
+    ...credentials.args,
+    '--output-format',
+    'json'
+  ]);
+
+  if (result.code !== 0) {
+    throw new Error(
+      [
+        'Notarization credentials were not accepted by notarytool before packaging.',
+        result.output.trim() || '(no output)',
+        credentials.mode === 'notarytool keychain profile'
+          ? `Recreate the profile with: xcrun notarytool store-credentials ${credentials.profileName}`
+          : null
+      ]
+        .filter(Boolean)
+        .join('\n')
+    );
+  }
+
+  console.log('[formic-rehearsal] Notarization credentials accepted by notarytool.');
+}
+
 async function prepareNotarizationZip(appDir) {
   const zipPath = path.join(defaultNotarizationDir, `${path.basename(appDir, '.app')}-notarization.zip`);
   await rm(defaultNotarizationDir, { recursive: true, force: true });
@@ -1485,6 +1513,7 @@ async function notarizationCheck(options) {
   const credentials = assertNotarizationCredentials();
   await assertXcrunTool('notarytool');
   await assertXcrunTool('stapler');
+  await assertNotarizationCredentialsUsable(credentials);
 
   const { packagedApp } = await signManagedDeveloperIdApp(options);
   const zipPath = await prepareNotarizationZip(packagedApp.appDir);

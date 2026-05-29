@@ -185,11 +185,11 @@ npm run desktop:resources:managed-notarization-check
 
 The command keeps the rehearsal scoped to `build/desktop-rehearsal`. electron-builder notarization is explicitly disabled for this rehearsal so the script owns the notarization sequence: it packages the managed `.app`, signs with Developer ID and hardened runtime, verifies codesigning, creates `build/desktop-rehearsal/notarization/Formic-notarization.zip` with `ditto --keepParent`, submits with `xcrun notarytool submit --wait`, staples the accepted ticket, validates stapling, requires `spctl --assess --type execute --verbose=4` to pass, launches the stapled app with no `FORMIC_SERVER_BUNDLE_DIR` while checking `/health`, `/ready`, and `/api/version`, then verifies the code signature again after launch.
 
-If notarization credentials are missing or incomplete, the notarization command fails up front with setup instructions. The preflight and Developer ID signing-only commands remain free of notarization credential requirements.
+If notarization credentials are missing, incomplete, or rejected by `notarytool`, the notarization command fails up front with setup instructions. The preflight and Developer ID signing-only commands remain free of notarization credential requirements.
 
 Current Phase 0 checkpoint: `APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-notarization-check` has succeeded end-to-end with `build/desktop-rehearsal/notarization/Formic-notarization.zip` around 609 MB (`638133905` bytes), `notarytool` status `Accepted`, stapling validation passing, `spctl` accepting the stapled app with `source=Notarized Developer ID`, and the stapled `.app` launching `Contents/Resources/formic-server/python-runtime` as `bundled managed Python runtime`. The API smoke passed `/health`, `/ready`, and `/api/version=0.9.5`.
 
-A May 29, 2026 rerun rebuilt the zip (`638134193` bytes) and verified Developer ID signing, but `notarytool` could not find the `formic-notary` keychain password item. Recreate that local profile before refreshing live Apple notarization evidence.
+A May 29, 2026 rerun rebuilt the zip (`638134193` bytes) and verified Developer ID signing, but `notarytool` could not find the `formic-notary` keychain password item. The rehearsal now validates `notarytool history` before packaging so that missing local profile fails fast. Recreate that local profile before refreshing live Apple notarization evidence.
 
 ## Decision Notes
 
