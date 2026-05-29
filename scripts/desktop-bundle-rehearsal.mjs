@@ -1107,7 +1107,7 @@ function logMachOSigningInventory(root, files) {
   const unsigned = files.filter((file) => !file.signed);
   console.log(`[formic-rehearsal] Mach-O signing inventory root: ${displayPath(root)}`);
   console.log(`[formic-rehearsal] Mach-O/signable files: ${files.length} total, ${unsigned.length} currently unsigned`);
-  console.log('[formic-rehearsal] Intended signing order: electron-builder signs the app, then python-runtime Mach-O files deepest-first, then the outer .app is re-signed and verified.');
+  console.log('[formic-rehearsal] Intended signing order: electron-builder signs Electron-managed app files while ignoring formic-server, then python-runtime Mach-O files are signed deepest-first, then the outer .app is re-signed and verified.');
 
   const sampleFiles = files.slice(0, 12);
   if (sampleFiles.length > 0) {
@@ -1174,6 +1174,7 @@ async function developerIdSignCheck(options) {
 
   console.log(`[formic-rehearsal] Developer ID signing identity: ${identity}`);
   console.log('[formic-rehearsal] Packaging with hardened runtime enabled through electron-builder.');
+  console.log('[formic-rehearsal] electron-builder is configured to ignore Contents/Resources/formic-server; the rehearsal signs only discovered Python Mach-O files.');
   const packagedApp = await packageResourcesApp(options, {
     managed: true,
     signingMode: 'developer-id',

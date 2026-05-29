@@ -7,7 +7,9 @@ const outputDir =
   process.env.FORMIC_ELECTRON_BUILDER_OUTPUT_DIR || path.join(repoRoot, 'build', 'desktop-rehearsal', 'packaged-app');
 const signingMode = process.env.FORMIC_ELECTRON_BUILDER_SIGNING_MODE || 'unsigned';
 const developerIdIdentity = process.env.FORMIC_DEVELOPER_IDENTITY || process.env.CSC_NAME || '';
+const electronBuilderIdentity = developerIdIdentity.replace(/^Developer ID Application:\s*/, '');
 const useDeveloperIdSigning = signingMode === 'developer-id';
+const pythonSidecarSignIgnore = String.raw`/Contents/Resources/formic-server/.*`;
 
 if (!['unsigned', 'developer-id'].includes(signingMode)) {
   throw new Error(`Unknown FORMIC_ELECTRON_BUILDER_SIGNING_MODE: ${signingMode}`);
@@ -36,10 +38,11 @@ module.exports = {
   npmRebuild: false,
   mac: {
     target: ['dir'],
-    identity: useDeveloperIdSigning ? developerIdIdentity : null,
+    identity: useDeveloperIdSigning ? electronBuilderIdentity : null,
     hardenedRuntime: useDeveloperIdSigning,
     entitlements: useDeveloperIdSigning ? 'apps/desktop/signing/entitlements.mac.plist' : undefined,
     entitlementsInherit: useDeveloperIdSigning ? 'apps/desktop/signing/entitlements.mac.inherit.plist' : undefined,
+    signIgnore: useDeveloperIdSigning ? [pythonSidecarSignIgnore] : undefined,
     gatekeeperAssess: false
   }
 };

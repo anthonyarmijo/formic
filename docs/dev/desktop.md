@@ -144,7 +144,9 @@ When a local Developer ID Application certificate and private key are available,
 FORMIC_DEVELOPER_IDENTITY="Developer ID Application: Example, Inc. (TEAMID1234)" npm run desktop:resources:managed-developer-id-sign-check
 ```
 
-`CSC_NAME` is accepted as a fallback identity variable. The command packages the managed app with `FORMIC_ELECTRON_BUILDER_SIGNING_MODE=developer-id`, enables hardened runtime, uses the tracked minimal Electron entitlements, signs Python runtime Mach-O files deepest-first, re-signs the outer `.app`, verifies with `codesign --verify --deep --strict --verbose=4`, runs `spctl --assess --type execute --verbose=4` as diagnostic-only, and then launches the signed app with no `FORMIC_SERVER_BUNDLE_DIR`.
+`CSC_NAME` is accepted as a fallback identity variable. The command packages the managed app with `FORMIC_ELECTRON_BUILDER_SIGNING_MODE=developer-id`, enables hardened runtime, and uses the tracked minimal Electron entitlements. electron-builder signs Electron-managed app/framework files while ignoring `Contents/Resources/formic-server`; the rehearsal script then signs only discovered Python runtime Mach-O files deepest-first, re-signs the outer `.app`, verifies with `codesign --verify --deep --strict --verbose=4`, runs `spctl --assess --type execute --verbose=4` as diagnostic-only, and launches the signed app with no `FORMIC_SERVER_BUNDLE_DIR`.
+
+The Python sidecar contains many data files, archives, and test fixtures. Those non-Mach-O files must not be signed; only Mach-O executables/libraries from the inventory are sent to `codesign`.
 
 If no Developer ID identity is configured, the Developer ID command intentionally runs the preflight and then fails with setup instructions. It never falls back to ad-hoc signing. This checkpoint still does not notarize, staple, create a DMG, or prove Gatekeeper acceptance.
 
