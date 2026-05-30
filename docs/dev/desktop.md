@@ -198,10 +198,10 @@ The managed notarization/stapling path has been proven with the stored keychain-
 APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-notarization-check
 ```
 
-Successful evidence captured from that run:
+Successful evidence captured from the latest restored-profile run:
 
-- The notary artifact was `build/desktop-rehearsal/notarization/Formic-notarization.zip`, a zipped `.app` made with `ditto --keepParent`; observed size was about 609 MB (`638133905` bytes).
-- `xcrun notarytool submit --wait` returned `Accepted`.
+- The notary artifact was `build/desktop-rehearsal/notarization/Formic-notarization.zip`, a zipped `.app` made with `ditto --keepParent`; observed size was about 609 MB (`638134227` bytes).
+- `xcrun notarytool submit --wait` returned `Accepted` for submission `918b9326-8993-46f0-9ce5-d433a5a106ec`.
 - `xcrun stapler staple -v` and `xcrun stapler validate -v` passed on `build/desktop-rehearsal/packaged-app/mac-arm64/Formic.app`.
 - `spctl --assess --type execute --verbose=4` accepted the stapled app with `source=Notarized Developer ID`.
 - The stapled app launched the sidecar from `Formic.app/Contents/Resources/formic-server/python-runtime` and Electron reported `bundled managed Python runtime`.
@@ -209,7 +209,7 @@ Successful evidence captured from that run:
 
 The API-only rehearsal uses `FORMIC_RENDERER_URL=about:blank` to keep the smoke scoped to the backend sidecar. Electron now treats that URL as an explicit renderer-load skip after backend readiness, so a successful API-only smoke is distinct from a full renderer smoke and no longer emits `Renderer startup failed: ERR_FAILED (-2) loading 'about:blank'` during intentional teardown. The rehearsal fails if future output includes a renderer startup failure or unhandled promise rejection.
 
-On May 29, 2026, a fresh notarization rerun prepared the same artifact shape (`Formic-notarization.zip`, 608.6 MB / `638134193` bytes) but stopped before submission because `notarytool` could not find the `formic-notary` keychain password item. That is a local credential-state issue, not a signing or packaging regression. The rehearsal now checks `notarytool history` before packaging so this condition fails fast. Recreate the profile with `xcrun notarytool store-credentials formic-notary`, then rerun the command above to refresh the live Apple notarization evidence.
+The local `formic-notary` profile was restored after an earlier keychain-profile miss, and the command above now repeats live notarization successfully. The rehearsal checks `notarytool history` before packaging so missing, incomplete, or rejected local credentials fail fast before the large managed runtime is rebuilt.
 
 ## Python Artifact Audit
 
@@ -275,7 +275,7 @@ Works:
 - `npm run desktop:resources:managed-signing-preflight` inventories the managed packaged app's Python Mach-O payload and intended signing order without Apple credentials.
 - `npm run desktop:resources:managed-developer-id-sign-check` is the credential-gated hardened-runtime signing dry run; it still does not notarize or staple.
 - `npm run desktop:resources:managed-notarization-check` is the credential-gated notarization/stapling dry run for the signed managed `.app`.
-- The managed notarization/stapling path has passed once end-to-end with a stapled app accepted by Gatekeeper and smoked from the bundled managed Python runtime.
+- The managed notarization/stapling path has passed end-to-end with the restored keychain profile, a stapled app accepted by Gatekeeper, and a smoke from the bundled managed Python runtime.
 
 Still flaky:
 
@@ -287,4 +287,4 @@ Still flaky:
 
 Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, and use the managed `python-runtime/` artifact as the primary path. The copied uv `.venv` can be retired from the primary packaging path and kept only as a comparison/regression rehearsal.
 
-Phase 0 remains focused on desktop packaging readiness: restoring the notarytool profile for repeatable live notarization, deciding DMG/pkg/container shape, deciding whether the managed-runtime payload needs pruning before installer compression, and proving any installer artifact preserves the notarized app seal. Phase 1 starts after that packaging boundary and should cover product/runtime work such as memory behavior; it should not be mixed into the Phase 0 signing/notarization checkpoint. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.
+Phase 0 remains focused on desktop packaging readiness: keeping the keychain-profile notarization path repeatable, deciding DMG/pkg/container shape, deciding whether the managed-runtime payload needs pruning before installer compression, and proving any installer artifact preserves the notarized app seal. Phase 1 starts after that packaging boundary and should cover product/runtime work such as memory behavior; it should not be mixed into the Phase 0 signing/notarization checkpoint. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.
