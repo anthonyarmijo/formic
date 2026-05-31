@@ -203,6 +203,8 @@ The DMG artifact is `build/desktop-rehearsal/dmg/Formic-managed-notarized.dmg`, 
 
 The local `formic-notary` profile was restored after an earlier keychain-profile miss, and the rehearsal now validates `notarytool history` before packaging so that missing, incomplete, or rejected credentials fail before rebuilding the large managed runtime.
 
+Good enough for Phase 0 now means the managed `.app` and plain DMG can be rebuilt, notarized, stapled, Gatekeeper-assessed, copied out of the mounted DMG, launched with the bundled managed Python runtime, and smoke-tested against `/health`, `/ready`, and `/api/version`. Visual DMG polish, `.pkg` packaging, updater work, and managed-runtime pruning are deferred unless a release consumer or distribution channel makes one of them a blocker. The next desktop work should move back to app features rather than expand packaging scope.
+
 ## Decision Notes
 
 - The Electron shell can check for an already-running backend before spawning its own process.
@@ -216,7 +218,7 @@ The local `formic-notary` profile was restored after an earlier keychain-profile
 - `FORMIC_RENDERER_URL=about:blank` is an API-only smoke sentinel. Electron now skips renderer loading for that URL after backend readiness, keeping API smoke distinct from full renderer smoke and avoiding teardown-time `ERR_FAILED` noise.
 - Backend failure screens include the selected launch plan and recent sidecar output.
 - Bundle-specific failures now catch missing backend entry files, missing lock/context files, or missing bundled Python before launching a process.
-- The next Phase 0 boundary is release packaging polish around the already signed/notarized managed `.app`: keep keychain-profile notarization and DMG checks repeatable, decide whether to prune the managed runtime before final compression, and decide whether plain DMG is enough or a `.pkg` alternative is required. Docker/server connection mode should stay as the fallback unless the bundled rehearsal proves too brittle. Phase 1 memory work starts after this desktop packaging boundary, not inside it.
+- The current Phase 0 boundary is the proven signed, notarized, stapled, and DMG-copied managed `.app`: keep keychain-profile notarization and DMG checks repeatable, but defer runtime pruning, DMG window polish, updater behavior, and any `.pkg` alternative unless they become concrete release blockers. Docker/server connection mode should stay as the fallback unless the bundled rehearsal proves too brittle. Phase 1 memory work starts after this desktop packaging boundary, not inside it.
 
 ## Results
 
@@ -247,4 +249,4 @@ Recommended path: keep pursuing a bundled Python sidecar as the Phase 0 default 
 
 Fallback path: keep `FORMIC_SERVER_MODE=external` for Docker or a user-managed server. Do not make this the primary desktop story unless the bundled-venv rehearsal fails on clean machines.
 
-Remaining Phase 0 work before final distributable release work: keep the local keychain-profile notarization and DMG paths repeatable, decide whether the managed-runtime payload needs pruning before final compression, and decide whether plain DMG is sufficient or a `.pkg` alternative is required. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough. Phase 1 is product/runtime memory work and should start after this desktop release-readiness boundary.
+Remaining Phase 0 work before final distributable release work: keep the local keychain-profile notarization and DMG paths repeatable. Runtime pruning, DMG window polish, updater behavior, and any `.pkg` alternative are deferred unless they become concrete release blockers. PyInstaller remains a fallback experiment if the managed-runtime payload cannot later be made small or reproducible enough. Phase 1 is product/runtime memory work and should start after this desktop release-readiness boundary.

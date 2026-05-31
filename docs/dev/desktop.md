@@ -228,6 +228,8 @@ The API-only rehearsal uses `FORMIC_RENDERER_URL=about:blank` to keep the smoke 
 
 The local `formic-notary` profile was restored after an earlier keychain-profile miss, and the command above now repeats live notarization successfully. The rehearsal checks `notarytool history` before packaging so missing, incomplete, or rejected local credentials fail fast before the large managed runtime is rebuilt.
 
+Good enough for Phase 0 now means the managed `.app` and plain DMG can be rebuilt, notarized, stapled, Gatekeeper-assessed, copied out of the mounted DMG, launched with the bundled managed Python runtime, and smoke-tested against `/health`, `/ready`, and `/api/version`. Visual DMG polish, `.pkg` packaging, updater work, and managed-runtime pruning are deferred unless a release consumer or distribution channel makes one of them a blocker. The next desktop work should move back to app features rather than expand packaging scope.
+
 ## Python Artifact Audit
 
 The signed-app Python decision is now captured by a repeatable, non-destructive audit against the existing rehearsal bundle:
@@ -305,4 +307,4 @@ Still flaky:
 
 Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, and use the managed `python-runtime/` artifact as the primary path. The copied uv `.venv` can be retired from the primary packaging path and kept only as a comparison/regression rehearsal.
 
-Phase 0 remains focused on desktop packaging readiness: keeping the keychain-profile notarization and DMG checks repeatable, deciding whether the managed-runtime payload needs pruning before final compression, and deciding whether plain DMG is enough or a `.pkg` alternative is required. Phase 1 starts after that packaging boundary and should cover product/runtime work such as memory behavior; it should not be mixed into the Phase 0 signing/notarization/DMG checkpoint. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.
+Phase 0 remains focused on desktop packaging readiness. The current signed, notarized, stapled, and DMG-copied managed `.app` proof is enough to stop expanding packaging for now. Keep the keychain-profile notarization and DMG checks repeatable; defer runtime pruning, DMG window polish, updater behavior, and any `.pkg` alternative unless they become concrete release blockers. Phase 1 starts after this packaging boundary and should cover product/runtime work such as memory behavior; it should not be mixed into the Phase 0 signing/notarization/DMG checkpoint. PyInstaller can stay as a fallback experiment if the managed-runtime payload later proves too large or too brittle.
