@@ -25,6 +25,7 @@
 		"desktop:resources:managed-signing-preflight": "node scripts/desktop-bundle-rehearsal.mjs resources-managed-signing-preflight",
 		"desktop:resources:managed-developer-id-sign-check": "node scripts/desktop-bundle-rehearsal.mjs resources-managed-developer-id-sign-check",
 		"desktop:resources:managed-notarization-check": "node scripts/desktop-bundle-rehearsal.mjs resources-managed-notarization-check",
+		"desktop:resources:managed-dmg-check": "node scripts/desktop-bundle-rehearsal.mjs resources-managed-dmg-check",
 		"dev:5050": "npm run pyodide:fetch && vite dev --port 5050",
 		"build": "npm run pyodide:fetch && vite build",
 		"build:watch": "npm run pyodide:fetch && vite build --watch",

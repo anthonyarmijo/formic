@@ -187,7 +187,19 @@ The command keeps the rehearsal scoped to `build/desktop-rehearsal`. electron-bu
 
 If notarization credentials are missing, incomplete, or rejected by `notarytool`, the notarization command fails up front with setup instructions. The preflight and Developer ID signing-only commands remain free of notarization credential requirements.
 
-Current Phase 0 checkpoint: `APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-notarization-check` has succeeded end-to-end with `build/desktop-rehearsal/notarization/Formic-notarization.zip` around 609 MB (`638134227` bytes), `notarytool` status `Accepted` for submission `918b9326-8993-46f0-9ce5-d433a5a106ec`, stapling validation passing, `spctl` accepting the stapled app with `source=Notarized Developer ID`, and the stapled `.app` launching `Contents/Resources/formic-server/python-runtime` as `bundled managed Python runtime`. The API smoke passed `/health`, `/ready`, and `/api/version=0.9.5`.
+## DMG Distribution Rehearsal
+
+The managed DMG proof starts from the same signed, notarized, and stapled managed `.app`:
+
+```sh
+APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-dmg-check
+```
+
+The command repeats Developer ID signing, notarization, stapling, post-staple `spctl`, and a source-app bundled-runtime smoke, then creates `build/desktop-rehearsal/dmg/Formic-managed-notarized.dmg`. It mounts the DMG read-only, verifies the mounted app with `codesign --verify --deep --strict --verbose=4` and `spctl --assess --type execute --verbose=4`, copies the app back out with `ditto`, repeats both checks on the copied app, launches the copied app with no `FORMIC_SERVER_BUNDLE_DIR`, confirms `bundled managed Python runtime`, verifies `/health`, `/ready`, and `/api/version`, verifies codesigning again after launch, and unmounts the DMG during cleanup.
+
+Current Phase 0 checkpoint: `APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-notarization-check` and `APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-dmg-check` have both succeeded end-to-end. The latest notary artifact is `build/desktop-rehearsal/notarization/Formic-notarization.zip`, around 608.6 MB (`638133843` bytes). `notarytool` returned `Accepted` for submission `cae571e0-af67-47c3-a06e-e8a4477c7588` during the standalone notarization check and `97590162-cffd-459a-85ba-5916e1615887` during the DMG rehearsal. Stapling validation passed, `spctl` accepted the stapled app with `source=Notarized Developer ID`, and the stapled `.app` launched `Contents/Resources/formic-server/python-runtime` as `bundled managed Python runtime`.
+
+The DMG artifact is `build/desktop-rehearsal/dmg/Formic-managed-notarized.dmg`, around 835.7 MB (`876321156` bytes). The mounted DMG app and copied-out DMG app both passed post-DMG `codesign --verify --deep --strict --verbose=4` and `spctl --assess --type execute --verbose=4` with `source=Notarized Developer ID`. The copied-out app launched `build/desktop-rehearsal/dmg/extracted/Formic.app/Contents/Resources/formic-server/python-runtime` as `bundled managed Python runtime`, and the API smoke passed `/health`, `/ready`, and `/api/version=0.9.5`.
 
 The local `formic-notary` profile was restored after an earlier keychain-profile miss, and the rehearsal now validates `notarytool history` before packaging so that missing, incomplete, or rejected credentials fail before rebuilding the large managed runtime.
 
@@ -204,7 +216,7 @@ The local `formic-notary` profile was restored after an earlier keychain-profile
 - `FORMIC_RENDERER_URL=about:blank` is an API-only smoke sentinel. Electron now skips renderer loading for that URL after backend readiness, keeping API smoke distinct from full renderer smoke and avoiding teardown-time `ERR_FAILED` noise.
 - Backend failure screens include the selected launch plan and recent sidecar output.
 - Bundle-specific failures now catch missing backend entry files, missing lock/context files, or missing bundled Python before launching a process.
-- The next Phase 0 boundary is installer/distribution packaging around the already signed/notarized managed `.app`: keep keychain-profile notarization repeatable, choose DMG/pkg/container shape, decide whether to prune the managed runtime before compression, and prove the installer preserves the stapled app seal. Docker/server connection mode should stay as the fallback unless the bundled rehearsal proves too brittle. Phase 1 memory work starts after this desktop packaging boundary, not inside it.
+- The next Phase 0 boundary is release packaging polish around the already signed/notarized managed `.app`: keep keychain-profile notarization and DMG checks repeatable, decide whether to prune the managed runtime before final compression, and decide whether plain DMG is enough or a `.pkg` alternative is required. Docker/server connection mode should stay as the fallback unless the bundled rehearsal proves too brittle. Phase 1 memory work starts after this desktop packaging boundary, not inside it.
 
 ## Results
 
@@ -226,6 +238,7 @@ The local `formic-notary` profile was restored after an earlier keychain-profile
 - `npm run desktop:resources:managed-developer-id-sign-check` now provides the credential-gated Developer ID hardened-runtime signing dry run; it still does not notarize or staple.
 - `npm run desktop:resources:managed-notarization-check` now provides the credential-gated notarization/stapling dry run for the Developer ID signed managed `.app`.
 - The managed notarization/stapling dry run has passed end-to-end with the restored keychain profile: accepted zip, stapled app, `spctl` accepted as `Notarized Developer ID`, bundled managed Python runtime launch, and `/health`, `/ready`, `/api/version=0.9.5`.
+- `npm run desktop:resources:managed-dmg-check` now proves a plain DMG preserves the stapled managed `.app`: the mounted and copied apps pass post-DMG `codesign`/`spctl`, and the copied app launches the bundled managed Python runtime and passes `/health`, `/ready`, `/api/version=0.9.5`.
 - The old `about:blank` renderer warning was a main-process API-smoke bug, not a backend failure. API-only smoke now skips renderer loading and the rehearsal treats renderer startup failures or unhandled promise rejections as failures.
 
 ## Current Packaging Read
@@ -234,4 +247,4 @@ Recommended path: keep pursuing a bundled Python sidecar as the Phase 0 default 
 
 Fallback path: keep `FORMIC_SERVER_MODE=external` for Docker or a user-managed server. Do not make this the primary desktop story unless the bundled-venv rehearsal fails on clean machines.
 
-Remaining Phase 0 work before distributable installer work: keep the local keychain-profile notarization path repeatable, choose the final DMG/pkg/container shape, decide whether the managed-runtime payload needs pruning before installer compression, and verify the installer does not break the stapled app seal. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough. Phase 1 is product/runtime memory work and should start after this desktop release-readiness boundary.
+Remaining Phase 0 work before final distributable release work: keep the local keychain-profile notarization and DMG paths repeatable, decide whether the managed-runtime payload needs pruning before final compression, and decide whether plain DMG is sufficient or a `.pkg` alternative is required. PyInstaller remains a fallback experiment if the managed-runtime payload cannot be made small or reproducible enough. Phase 1 is product/runtime memory work and should start after this desktop release-readiness boundary.

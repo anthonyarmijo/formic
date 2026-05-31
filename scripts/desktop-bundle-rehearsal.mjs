@@ -13,6 +13,7 @@ const defaultPackageDir = path.join(defaultRehearsalRoot, 'packaged-app');
 const defaultRelocationDir = path.join(defaultRehearsalRoot, 'relocation path with spaces');
 const defaultRuntimeDir = path.join(defaultRehearsalRoot, 'runtime-data');
 const defaultNotarizationDir = path.join(defaultRehearsalRoot, 'notarization');
+const defaultDmgDir = path.join(defaultRehearsalRoot, 'dmg');
 const defaultPort = 18080;
 const defaultTimeoutMs = 180000;
 const managedPythonRequest = '3.11';
@@ -112,6 +113,7 @@ function parseArgs(argv) {
       'resources-managed-signing-preflight',
       'resources-managed-developer-id-sign-check',
       'resources-managed-notarization-check',
+      'resources-managed-dmg-check',
       'audit',
       'relocation-smoke',
       'managed-build',
@@ -1399,6 +1401,27 @@ async function assertXcrunTool(toolName) {
   }
 }
 
+async function assertCommandAvailable(command, setupMessage) {
+  let result;
+  try {
+    result = await runResult(command, ['help']);
+  } catch (error) {
+    throw new Error(
+      [`Could not run ${command}.`, setupMessage, error instanceof Error ? error.message : String(error)]
+        .filter(Boolean)
+        .join('\n')
+    );
+  }
+
+  if (result.code !== 0) {
+    throw new Error(
+      [`Could not run ${command}.`, setupMessage, result.output.trim()]
+        .filter(Boolean)
+        .join('\n')
+    );
+  }
+}
+
 async function assertNotarizationCredentialsUsable(credentials) {
   console.log(`[formic-rehearsal] Validating notarization credentials with ${credentials.mode}.`);
   const result = await runResult('xcrun', [
@@ -1505,7 +1528,115 @@ async function assertSpctlAccepted(appDir) {
   }
 }
 
-async function notarizationCheck(options) {
+async function packagedAppFromAppDir(appDir) {
+  const macOsDir = path.join(appDir, 'Contents', 'MacOS');
+  const executables = (await readdir(macOsDir, { withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.join(macOsDir, entry.name));
+
+  if (executables.length === 0) {
+    throw new Error(`No packaged app executable found under ${macOsDir}.`);
+  }
+
+  return {
+    appDir,
+    executable: executables[0],
+    resourcesDir: path.join(appDir, 'Contents', 'Resources'),
+    serverDir: path.join(appDir, 'Contents', 'Resources', 'formic-server')
+  };
+}
+
+async function createDmgFromStapledApp(appDir) {
+  if (process.platform !== 'darwin') {
+    throw new Error('The DMG check currently expects macOS hdiutil tooling.');
+  }
+
+  const mountPoint = path.join(defaultDmgDir, 'mount');
+  if (await pathExists(mountPoint)) {
+    await runResult('hdiutil', ['detach', mountPoint, '-force']);
+  }
+
+  await rm(defaultDmgDir, { recursive: true, force: true });
+  const stagingDir = path.join(defaultDmgDir, 'staging');
+  const stagedAppDir = path.join(stagingDir, path.basename(appDir));
+  const dmgPath = path.join(defaultDmgDir, `${path.basename(appDir, '.app')}-managed-notarized.dmg`);
+
+  await mkdir(stagingDir, { recursive: true });
+  await run('ditto', [appDir, stagedAppDir]);
+  await run('hdiutil', [
+    'create',
+    '-volname',
+    path.basename(appDir, '.app'),
+    '-srcfolder',
+    stagingDir,
+    '-ov',
+    '-format',
+    'UDZO',
+    dmgPath
+  ]);
+
+  const dmgStat = await stat(dmgPath);
+  console.log(
+    `[formic-rehearsal] DMG artifact ready: ${displayPath(dmgPath)} (${formatBytes(dmgStat.size)}, ${dmgStat.size} bytes)`
+  );
+  return { dmgPath, size: dmgStat.size, sizeLabel: formatBytes(dmgStat.size) };
+}
+
+async function mountDmg(dmgPath) {
+  const mountPoint = path.join(defaultDmgDir, 'mount');
+  await rm(mountPoint, { recursive: true, force: true });
+  await mkdir(mountPoint, { recursive: true });
+
+  const result = await runResult('hdiutil', ['attach', dmgPath, '-nobrowse', '-readonly', '-mountpoint', mountPoint]);
+  if (result.code !== 0) {
+    throw new Error(`hdiutil attach failed.\n${result.output.trim() || '(no output)'}`);
+  }
+
+  console.log(`[formic-rehearsal] DMG mounted: ${displayPath(mountPoint)}`);
+  return mountPoint;
+}
+
+async function unmountDmg(mountPoint) {
+  if (!(await pathExists(mountPoint))) {
+    return;
+  }
+
+  const result = await runResult('hdiutil', ['detach', mountPoint]);
+  if (result.code === 0) {
+    console.log(`[formic-rehearsal] DMG unmounted: ${displayPath(mountPoint)}`);
+    return;
+  }
+
+  const forced = await runResult('hdiutil', ['detach', mountPoint, '-force']);
+  if (forced.code !== 0) {
+    console.log(
+      `[formic-rehearsal] DMG unmount failed: ${forced.output.trim() || result.output.trim() || '(no output)'}`
+    );
+  } else {
+    console.log(`[formic-rehearsal] DMG unmounted with force: ${displayPath(mountPoint)}`);
+  }
+}
+
+async function copyAppFromMountedDmg(mountedAppDir) {
+  const extractedDir = path.join(defaultDmgDir, 'extracted');
+  const copiedAppDir = path.join(extractedDir, path.basename(mountedAppDir));
+
+  await rm(extractedDir, { recursive: true, force: true });
+  await mkdir(extractedDir, { recursive: true });
+  await run('ditto', [mountedAppDir, copiedAppDir]);
+
+  console.log(`[formic-rehearsal] DMG app copied for launch smoke: ${displayPath(copiedAppDir)}`);
+  return packagedAppFromAppDir(copiedAppDir);
+}
+
+async function verifyPostDmgApp(appDir, label) {
+  await verifyCodesignedApp(appDir);
+  console.log(`[formic-rehearsal] Post-DMG codesign verification passed (${label}): ${displayPath(appDir)}`);
+  await assertSpctlAccepted(appDir);
+  console.log(`[formic-rehearsal] Post-DMG spctl assessment passed (${label}): ${displayPath(appDir)}`);
+}
+
+async function prepareStapledNotarizedManagedApp(options) {
   if (process.platform !== 'darwin') {
     throw new Error('The notarization check currently expects macOS notarytool/stapler/spctl tooling.');
   }
@@ -1517,15 +1648,64 @@ async function notarizationCheck(options) {
 
   const { packagedApp } = await signManagedDeveloperIdApp(options);
   const zipPath = await prepareNotarizationZip(packagedApp.appDir);
-  await submitForNotarization(zipPath, credentials);
+  const notarization = await submitForNotarization(zipPath, credentials);
   await stapleAndValidate(packagedApp.appDir);
   await assertSpctlAccepted(packagedApp.appDir);
+
+  return { packagedApp, zipPath, notarization };
+}
+
+async function notarizationCheck(options) {
+  const { packagedApp } = await prepareStapledNotarizedManagedApp(options);
   await smokePackagedApp(packagedApp, options, {
     managed: true,
     runtimeName: 'resources-managed-notarization-smoke'
   });
   await verifyCodesignedApp(packagedApp.appDir);
   console.log('[formic-rehearsal] Notarization/stapling check passed.');
+}
+
+async function dmgCheck(options) {
+  if (process.platform !== 'darwin') {
+    throw new Error('The DMG check currently expects macOS codesign/notarytool/stapler/spctl/hdiutil tooling.');
+  }
+
+  await assertCommandAvailable('hdiutil', 'Install or restore the macOS disk image utility before running the DMG rehearsal.');
+
+  const { packagedApp } = await prepareStapledNotarizedManagedApp(options);
+  await smokePackagedApp(packagedApp, options, {
+    managed: true,
+    runtimeName: 'resources-managed-dmg-source-smoke'
+  });
+  await verifyCodesignedApp(packagedApp.appDir);
+
+  const dmg = await createDmgFromStapledApp(packagedApp.appDir);
+  const mountPoint = await mountDmg(dmg.dmgPath);
+  const mountedAppDir = path.join(mountPoint, path.basename(packagedApp.appDir));
+  let copiedApp = null;
+
+  try {
+    if (!(await pathExists(mountedAppDir))) {
+      throw new Error(`Mounted DMG did not contain ${path.basename(packagedApp.appDir)} at ${mountedAppDir}.`);
+    }
+
+    await verifyPostDmgApp(mountedAppDir, 'mounted app');
+    copiedApp = await copyAppFromMountedDmg(mountedAppDir);
+  } finally {
+    await unmountDmg(mountPoint);
+  }
+
+  await validateBundle(copiedApp.serverDir);
+  await verifyPostDmgApp(copiedApp.appDir, 'copied app');
+  await smokePackagedApp(copiedApp, options, {
+    managed: true,
+    runtimeName: 'resources-managed-dmg-smoke'
+  });
+  await verifyCodesignedApp(copiedApp.appDir);
+
+  console.log(
+    `[formic-rehearsal] DMG distribution check passed: ${displayPath(dmg.dmgPath)} (${dmg.sizeLabel}, ${dmg.size} bytes)`
+  );
 }
 
 async function smokeBundle(
@@ -1720,6 +1900,11 @@ async function runCommand(options) {
 
   if (options.command === 'resources-managed-notarization-check') {
     await notarizationCheck(options);
+    return;
+  }
+
+  if (options.command === 'resources-managed-dmg-check') {
+    await dmgCheck(options);
     return;
   }
 

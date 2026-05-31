@@ -190,22 +190,39 @@ The command keeps all output under `build/desktop-rehearsal`. electron-builder n
 
 If notarization credentials are missing, incomplete, or rejected by `notarytool`, the command fails before packaging with setup instructions. The preflight and Developer ID signing-only commands do not read or require notarization credentials.
 
+## DMG Distribution Rehearsal
+
+The managed DMG distribution rehearsal starts from the same signed, notarized, and stapled managed `.app`, then proves a plain user-facing DMG preserves the app seal and bundled runtime:
+
+```sh
+APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-dmg-check
+```
+
+The command keeps all output under `build/desktop-rehearsal`. It repeats the Developer ID signing and notarization/stapling sequence, launches the stapled source app with no `FORMIC_SERVER_BUNDLE_DIR`, creates `build/desktop-rehearsal/dmg/Formic-managed-notarized.dmg`, mounts the DMG read-only, verifies the mounted app with `codesign --verify --deep --strict --verbose=4` and `spctl --assess --type execute --verbose=4`, copies the mounted app back out with `ditto`, verifies the copied app with the same `codesign` and `spctl` checks, launches the copied app with no `FORMIC_SERVER_BUNDLE_DIR`, confirms Electron reports `bundled managed Python runtime`, probes `/health`, `/ready`, and `/api/version`, verifies codesigning again after launch, and unmounts the DMG in cleanup.
+
+This is intentionally a distribution-container proof only. It does not add DMG window polish, `.pkg` work, updater work, or Phase 1 product/runtime changes.
+
 ### Phase 0 Release-Readiness Checkpoint
 
-The managed notarization/stapling path has been proven with the stored keychain-profile credential path:
+The managed notarization/stapling and DMG distribution paths have been proven with the stored keychain-profile credential path:
 
 ```sh
 APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-notarization-check
+APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-dmg-check
 ```
 
-Successful evidence captured from the latest restored-profile run:
+Successful evidence captured from the May 31, 2026 restored-profile runs:
 
-- The notary artifact was `build/desktop-rehearsal/notarization/Formic-notarization.zip`, a zipped `.app` made with `ditto --keepParent`; observed size was about 609 MB (`638134227` bytes).
-- `xcrun notarytool submit --wait` returned `Accepted` for submission `918b9326-8993-46f0-9ce5-d433a5a106ec`.
+- The latest notary artifact was `build/desktop-rehearsal/notarization/Formic-notarization.zip`, a zipped `.app` made with `ditto --keepParent`; observed size was about 608.6 MB (`638133843` bytes).
+- `xcrun notarytool submit --wait` returned `Accepted` for submission `cae571e0-af67-47c3-a06e-e8a4477c7588` during the standalone notarization check and `97590162-cffd-459a-85ba-5916e1615887` during the DMG rehearsal.
 - `xcrun stapler staple -v` and `xcrun stapler validate -v` passed on `build/desktop-rehearsal/packaged-app/mac-arm64/Formic.app`.
 - `spctl --assess --type execute --verbose=4` accepted the stapled app with `source=Notarized Developer ID`.
 - The stapled app launched the sidecar from `Formic.app/Contents/Resources/formic-server/python-runtime` and Electron reported `bundled managed Python runtime`.
 - The stapled-app API smoke passed `/health`, `/ready`, and `/api/version=0.9.5`.
+- The DMG artifact was `build/desktop-rehearsal/dmg/Formic-managed-notarized.dmg`; observed size was about 835.7 MB (`876321156` bytes).
+- The mounted DMG app and the copied-out DMG app both passed `codesign --verify --deep --strict --verbose=4`.
+- The mounted DMG app and the copied-out DMG app both passed `spctl --assess --type execute --verbose=4` with `source=Notarized Developer ID`.
+- The copied-out DMG app launched the sidecar from `build/desktop-rehearsal/dmg/extracted/Formic.app/Contents/Resources/formic-server/python-runtime`, Electron reported `bundled managed Python runtime`, and the API smoke passed `/health`, `/ready`, and `/api/version=0.9.5`.
 
 The API-only rehearsal uses `FORMIC_RENDERER_URL=about:blank` to keep the smoke scoped to the backend sidecar. Electron now treats that URL as an explicit renderer-load skip after backend readiness, so a successful API-only smoke is distinct from a full renderer smoke and no longer emits `Renderer startup failed: ERR_FAILED (-2) loading 'about:blank'` during intentional teardown. The rehearsal fails if future output includes a renderer startup failure or unhandled promise rejection.
 
@@ -276,6 +293,7 @@ Works:
 - `npm run desktop:resources:managed-developer-id-sign-check` is the credential-gated hardened-runtime signing dry run; it still does not notarize or staple.
 - `npm run desktop:resources:managed-notarization-check` is the credential-gated notarization/stapling dry run for the signed managed `.app`.
 - The managed notarization/stapling path has passed end-to-end with the restored keychain profile, a stapled app accepted by Gatekeeper, and a smoke from the bundled managed Python runtime.
+- `npm run desktop:resources:managed-dmg-check` proves the stapled managed `.app` survives a plain DMG distribution container: mounted and copied apps pass `codesign`/`spctl`, and the copied app launches the bundled managed Python runtime and serves `/health`, `/ready`, and `/api/version=0.9.5`.
 
 Still flaky:
 
@@ -283,8 +301,8 @@ Still flaky:
 - The copied `.venv` packaged resources rehearsal uses the current machine's uv-created `.venv`; it relocated successfully into the local `.app` resources path and a second path with spaces on this machine, but the audit shows the Python executable is still an absolute symlink to the local uv-managed runtime outside the bundle.
 - The smoke command verifies the API sidecar path with an `about:blank` renderer URL. It now deliberately skips renderer loading after backend readiness, so it does not prove the full packaged renderer, installer, updater, signing, or notarization path.
 - electron-builder warns that arm64 macOS normally requires signing; this rehearsal intentionally skips signing with `identity: null`.
-- The local ad-hoc signing check proves the current filesystem layout is signable on this machine, while the Developer ID rehearsal is the first real hardened-runtime signing gate. The notarization rehearsal now covers zip submission, stapling, post-staple Gatekeeper assessment, and a managed sidecar smoke from the stapled `.app`; installer shape and final distribution polish are still separate.
+- The local ad-hoc signing check proves the current filesystem layout is signable on this machine, while the Developer ID rehearsal is the first real hardened-runtime signing gate. The notarization rehearsal now covers zip submission, stapling, post-staple Gatekeeper assessment, and a managed sidecar smoke from the stapled `.app`; the DMG rehearsal proves a plain distribution container preserves that app seal, but final visual DMG polish, updater behavior, and any `.pkg` alternative remain separate.
 
 Recommended Phase 0 packaging strategy: keep the `formic-server` sidecar layout and Electron launcher, and use the managed `python-runtime/` artifact as the primary path. The copied uv `.venv` can be retired from the primary packaging path and kept only as a comparison/regression rehearsal.
 
-Phase 0 remains focused on desktop packaging readiness: keeping the keychain-profile notarization path repeatable, deciding DMG/pkg/container shape, deciding whether the managed-runtime payload needs pruning before installer compression, and proving any installer artifact preserves the notarized app seal. Phase 1 starts after that packaging boundary and should cover product/runtime work such as memory behavior; it should not be mixed into the Phase 0 signing/notarization checkpoint. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.
+Phase 0 remains focused on desktop packaging readiness: keeping the keychain-profile notarization and DMG checks repeatable, deciding whether the managed-runtime payload needs pruning before final compression, and deciding whether plain DMG is enough or a `.pkg` alternative is required. Phase 1 starts after that packaging boundary and should cover product/runtime work such as memory behavior; it should not be mixed into the Phase 0 signing/notarization/DMG checkpoint. PyInstaller can stay as a fallback experiment if the managed-runtime payload remains too large or too brittle.
