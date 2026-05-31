@@ -198,7 +198,7 @@ The managed DMG distribution rehearsal starts from the same signed, notarized, a
 APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-dmg-check
 ```
 
-The command keeps all output under `build/desktop-rehearsal`. It repeats the Developer ID signing and notarization/stapling sequence, launches the stapled source app with no `FORMIC_SERVER_BUNDLE_DIR`, creates `build/desktop-rehearsal/dmg/Formic-managed-notarized.dmg`, mounts the DMG read-only, verifies the mounted app with `codesign --verify --deep --strict --verbose=4` and `spctl --assess --type execute --verbose=4`, copies the mounted app back out with `ditto`, verifies the copied app with the same `codesign` and `spctl` checks, launches the copied app with no `FORMIC_SERVER_BUNDLE_DIR`, confirms Electron reports `bundled managed Python runtime`, probes `/health`, `/ready`, and `/api/version`, verifies codesigning again after launch, and unmounts the DMG in cleanup.
+The command keeps all output under `build/desktop-rehearsal`. It repeats the Developer ID signing and notarization/stapling sequence, launches the stapled source app with no `FORMIC_SERVER_BUNDLE_DIR`, creates `build/desktop-rehearsal/dmg/Formic-managed-notarized.dmg`, mounts the DMG read-only, verifies the mounted app with `codesign --verify --deep --strict --verbose=4` and `spctl --assess --type execute --verbose=4`, launches the mounted app with Electron-owned writable backend directories, copies the mounted app back out with `ditto`, verifies the copied app with the same `codesign` and `spctl` checks, launches the copied app with no `FORMIC_SERVER_BUNDLE_DIR`, confirms Electron reports `bundled managed Python runtime`, probes `/health`, `/ready`, and `/api/version`, verifies codesigning again after launch, and unmounts the DMG in cleanup.
 
 This is intentionally a distribution-container proof only. It does not add DMG window polish, `.pkg` work, updater work, or Phase 1 product/runtime changes.
 
@@ -228,7 +228,7 @@ The API-only rehearsal uses `FORMIC_RENDERER_URL=about:blank` to keep the smoke 
 
 The local `formic-notary` profile was restored after an earlier keychain-profile miss, and the command above now repeats live notarization successfully. The rehearsal checks `notarytool history` before packaging so missing, incomplete, or rejected local credentials fail fast before the large managed runtime is rebuilt.
 
-Good enough for Phase 0 now means the managed `.app` and plain DMG can be rebuilt, notarized, stapled, Gatekeeper-assessed, copied out of the mounted DMG, launched with the bundled managed Python runtime, and smoke-tested against `/health`, `/ready`, and `/api/version`. Visual DMG polish, `.pkg` packaging, updater work, and managed-runtime pruning are deferred unless a release consumer or distribution channel makes one of them a blocker. The next desktop work should move back to app features rather than expand packaging scope.
+Good enough for Phase 0 now means the managed `.app` and plain DMG can be rebuilt, notarized, stapled, Gatekeeper-assessed, launched from the mounted DMG, copied out of the mounted DMG, launched with the bundled managed Python runtime, and smoke-tested against `/health`, `/ready`, and `/api/version`. Visual DMG polish, `.pkg` packaging, updater work, and managed-runtime pruning are deferred unless a release consumer or distribution channel makes one of them a blocker. The next desktop work should move back to app features rather than expand packaging scope.
 
 ## Python Artifact Audit
 
@@ -295,7 +295,7 @@ Works:
 - `npm run desktop:resources:managed-developer-id-sign-check` is the credential-gated hardened-runtime signing dry run; it still does not notarize or staple.
 - `npm run desktop:resources:managed-notarization-check` is the credential-gated notarization/stapling dry run for the signed managed `.app`.
 - The managed notarization/stapling path has passed end-to-end with the restored keychain profile, a stapled app accepted by Gatekeeper, and a smoke from the bundled managed Python runtime.
-- `npm run desktop:resources:managed-dmg-check` proves the stapled managed `.app` survives a plain DMG distribution container: mounted and copied apps pass `codesign`/`spctl`, and the copied app launches the bundled managed Python runtime and serves `/health`, `/ready`, and `/api/version=0.9.5`.
+- `npm run desktop:resources:managed-dmg-check` proves the stapled managed `.app` survives a plain DMG distribution container: mounted and copied apps pass `codesign`/`spctl`, and both launch the bundled managed Python runtime and serve `/health`, `/ready`, and `/api/version=0.9.5`.
 
 Still flaky:
 

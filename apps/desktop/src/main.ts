@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
 import path from 'node:path';
@@ -70,6 +70,10 @@ function parseTimeout(value: string | undefined, fallbackMs: number): number {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
+}
+
+function desktopUserDataDir(): string {
+  return process.env.FORMIC_DESKTOP_USER_DATA_DIR ?? app.getPath('userData');
 }
 
 function sleep(ms: number): Promise<void> {
@@ -412,6 +416,9 @@ function spawnServer(): void {
   }
 
   const launchPlan = buildServerLaunchPlan();
+  const userDataDir = desktopUserDataDir();
+  const dataDir = process.env.DATA_DIR ?? path.join(userDataDir, 'backend-data');
+  const staticDir = process.env.STATIC_DIR ?? path.join(userDataDir, 'backend-static');
   activeServerLaunchPlan = launchPlan;
   recentServerOutput.length = 0;
 
@@ -428,10 +435,21 @@ function spawnServer(): void {
     return;
   }
 
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(staticDir, { recursive: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    serverStatus = 'failed';
+    lastServerError = `Could not create writable desktop backend directories: ${message}`;
+    return;
+  }
+
   console.log(
     `[formic-desktop] Server launch plan: ${launchPlan.command} ${launchPlan.args.join(' ')} (${launchPlan.source})`
   );
   console.log(`[formic-desktop] Server root: ${launchPlan.cwd}`);
+  console.log(`[formic-desktop] Server data dir: ${dataDir}`);
 
   serverProcess = spawn(launchPlan.command, [
     ...launchPlan.args,
@@ -447,13 +465,14 @@ function spawnServer(): void {
     env: {
       ...process.env,
       CORS_ALLOW_ORIGIN: buildCorsAllowOrigin(),
+      DATA_DIR: dataDir,
       FORMIC_DESKTOP: 'true',
       FORMIC_LAZY_EMBEDDINGS: process.env.FORMIC_LAZY_EMBEDDINGS ?? 'true',
       FORWARDED_ALLOW_IPS: '*',
       PORT: String(serverPort),
       PYTHONDONTWRITEBYTECODE: process.env.PYTHONDONTWRITEBYTECODE ?? '1',
       PYTHONPATH: launchPlan.backendDir,
-      STATIC_DIR: process.env.STATIC_DIR ?? path.join(app.getPath('userData'), 'backend-static'),
+      STATIC_DIR: staticDir,
       WEBUI_URL: serverUrl
     }
   });

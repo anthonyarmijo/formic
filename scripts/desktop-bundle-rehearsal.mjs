@@ -925,7 +925,11 @@ async function ensurePortAvailable(port) {
   throw new Error(`Port ${port} already has a healthy Formic backend. Choose another port with --port.`);
 }
 
-async function smokePackagedApp(packagedApp, options, { managed = false, runtimeName = null } = {}) {
+async function smokePackagedApp(
+  packagedApp,
+  options,
+  { managed = false, runtimeName = null, useDefaultDesktopBackendDirs = false } = {}
+) {
   await ensurePortAvailable(options.port);
 
   const serverUrl = `http://127.0.0.1:${options.port}`;
@@ -935,25 +939,36 @@ async function smokePackagedApp(packagedApp, options, { managed = false, runtime
     : path.join(defaultRuntimeDir, `${runtimeName ?? (managed ? 'resources-managed-smoke' : 'resources-smoke')}-${options.port}`);
   const runtimeDataDir = path.join(runtimeRoot, 'data');
   const runtimeStaticDir = path.join(runtimeRoot, 'backend-static');
+  const runtimeUserDataDir = path.join(runtimeRoot, 'electron-user-data');
 
   if (!customRuntimeRoot) {
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 
-  await mkdir(runtimeDataDir, { recursive: true });
-  await mkdir(runtimeStaticDir, { recursive: true });
+  if (useDefaultDesktopBackendDirs) {
+    await mkdir(runtimeUserDataDir, { recursive: true });
+  } else {
+    await mkdir(runtimeDataDir, { recursive: true });
+    await mkdir(runtimeStaticDir, { recursive: true });
+  }
 
   const env = {
     ...process.env,
+    FORMIC_DESKTOP_USER_DATA_DIR: runtimeUserDataDir,
     FORMIC_SERVER_MODE: 'spawn',
     FORMIC_SERVER_PORT: String(options.port),
     FORMIC_SERVER_URL: serverUrl,
     FORMIC_RENDERER_URL: 'about:blank',
     FORMIC_SERVER_READY_TIMEOUT_MS: String(options.timeoutMs),
-    FORMIC_LAZY_EMBEDDINGS: 'true',
-    DATA_DIR: runtimeDataDir,
-    STATIC_DIR: runtimeStaticDir
+    FORMIC_LAZY_EMBEDDINGS: 'true'
   };
+  if (useDefaultDesktopBackendDirs) {
+    delete env.DATA_DIR;
+    delete env.STATIC_DIR;
+  } else {
+    env.DATA_DIR = runtimeDataDir;
+    env.STATIC_DIR = runtimeStaticDir;
+  }
   delete env.FORMIC_SERVER_BUNDLE_DIR;
   delete env.FORMIC_PYTHON;
 
@@ -1690,6 +1705,20 @@ async function dmgCheck(options) {
     }
 
     await verifyPostDmgApp(mountedAppDir, 'mounted app');
+    await smokePackagedApp(
+      {
+        ...packagedApp,
+        appDir: mountedAppDir,
+        executable: path.join(mountedAppDir, 'Contents', 'MacOS', path.basename(packagedApp.executable)),
+        serverDir: path.join(mountedAppDir, 'Contents', 'Resources', 'formic-server')
+      },
+      options,
+      {
+        managed: true,
+        runtimeName: 'resources-managed-dmg-mounted-smoke',
+        useDefaultDesktopBackendDirs: true
+      }
+    );
     copiedApp = await copyAppFromMountedDmg(mountedAppDir);
   } finally {
     await unmountDmg(mountPoint);
