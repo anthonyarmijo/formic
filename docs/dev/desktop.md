@@ -198,7 +198,7 @@ The managed DMG distribution rehearsal starts from the same signed, notarized, a
 APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-dmg-check
 ```
 
-The command keeps all output under `build/desktop-rehearsal`. It repeats the Developer ID signing and notarization/stapling sequence, launches the stapled source app with no `FORMIC_SERVER_BUNDLE_DIR`, creates `build/desktop-rehearsal/dmg/Formic-managed-notarized.dmg`, mounts the DMG read-only, verifies the mounted app with `codesign --verify --deep --strict --verbose=4` and `spctl --assess --type execute --verbose=4`, launches the mounted app with Electron-owned writable backend directories, copies the mounted app back out with `ditto`, verifies the copied app with the same `codesign` and `spctl` checks, launches the copied app with no `FORMIC_SERVER_BUNDLE_DIR`, confirms Electron reports `bundled managed Python runtime`, probes `/health`, `/ready`, and `/api/version`, verifies codesigning again after launch, and unmounts the DMG in cleanup.
+The command keeps all output under `build/desktop-rehearsal`. It repeats the Developer ID signing and notarization/stapling sequence, builds and bundles the Svelte static renderer under `Contents/Resources/formic-server/build`, launches the stapled source app with no `FORMIC_SERVER_BUNDLE_DIR`, creates `build/desktop-rehearsal/dmg/Formic-managed-notarized.dmg`, mounts the DMG read-only, verifies the mounted app with `codesign --verify --deep --strict --verbose=4` and `spctl --assess --type execute --verbose=4`, launches the mounted app with Electron-owned writable backend directories and the packaged renderer loaded from the bundled FastAPI server, copies the mounted app back out with `ditto`, verifies the copied app with the same `codesign` and `spctl` checks, launches the copied app with no `FORMIC_SERVER_BUNDLE_DIR`, confirms Electron reports `bundled managed Python runtime`, probes `/health`, `/ready`, and `/api/version`, verifies codesigning again after launch, and unmounts the DMG in cleanup.
 
 This is intentionally a distribution-container proof only. It does not add DMG window polish, `.pkg` work, updater work, or Phase 1 product/runtime changes.
 
@@ -213,22 +213,22 @@ APPLE_NOTARY_KEYCHAIN_PROFILE=formic-notary npm run desktop:resources:managed-dm
 
 Successful evidence captured from the May 31, 2026 restored-profile runs:
 
-- The latest notary artifact was `build/desktop-rehearsal/notarization/Formic-notarization.zip`, a zipped `.app` made with `ditto --keepParent`; observed size was about 608.6 MB (`638133843` bytes).
-- `xcrun notarytool submit --wait` returned `Accepted` for submission `cae571e0-af67-47c3-a06e-e8a4477c7588` during the standalone notarization check and `97590162-cffd-459a-85ba-5916e1615887` during the DMG rehearsal.
+- The latest notary artifact was `build/desktop-rehearsal/notarization/Formic-notarization.zip`, a zipped `.app` made with `ditto --keepParent`; observed size was about 717.8 MB (`752632727` bytes).
+- `xcrun notarytool submit --wait` returned `Accepted` for the latest DMG rehearsal submission `eef5db46-6df0-4710-b5cc-ff5d6c6be5d1`.
 - `xcrun stapler staple -v` and `xcrun stapler validate -v` passed on `build/desktop-rehearsal/packaged-app/mac-arm64/Formic.app`.
 - `spctl --assess --type execute --verbose=4` accepted the stapled app with `source=Notarized Developer ID`.
 - The stapled app launched the sidecar from `Formic.app/Contents/Resources/formic-server/python-runtime` and Electron reported `bundled managed Python runtime`.
 - The stapled-app API smoke passed `/health`, `/ready`, and `/api/version=0.9.5`.
-- The DMG artifact was `build/desktop-rehearsal/dmg/Formic-managed-notarized.dmg`; observed size was about 835.7 MB (`876321156` bytes).
+- The DMG artifact was `build/desktop-rehearsal/dmg/Formic-managed-notarized.dmg`; observed size was about 965.1 MB (`1011936438` bytes).
 - The mounted DMG app and the copied-out DMG app both passed `codesign --verify --deep --strict --verbose=4`.
 - The mounted DMG app and the copied-out DMG app both passed `spctl --assess --type execute --verbose=4` with `source=Notarized Developer ID`.
-- The copied-out DMG app launched the sidecar from `build/desktop-rehearsal/dmg/extracted/Formic.app/Contents/Resources/formic-server/python-runtime`, Electron reported `bundled managed Python runtime`, and the API smoke passed `/health`, `/ready`, and `/api/version=0.9.5`.
+- The mounted DMG app launched with the packaged renderer from the bundled FastAPI server; the copied-out DMG app launched the sidecar from `build/desktop-rehearsal/dmg/extracted/Formic.app/Contents/Resources/formic-server/python-runtime`, Electron reported `bundled managed Python runtime`, and the API smoke passed `/health`, `/ready`, and `/api/version=0.9.5`.
 
 The API-only rehearsal uses `FORMIC_RENDERER_URL=about:blank` to keep the smoke scoped to the backend sidecar. Electron now treats that URL as an explicit renderer-load skip after backend readiness, so a successful API-only smoke is distinct from a full renderer smoke and no longer emits `Renderer startup failed: ERR_FAILED (-2) loading 'about:blank'` during intentional teardown. The rehearsal fails if future output includes a renderer startup failure or unhandled promise rejection.
 
 The local `formic-notary` profile was restored after an earlier keychain-profile miss, and the command above now repeats live notarization successfully. The rehearsal checks `notarytool history` before packaging so missing, incomplete, or rejected local credentials fail fast before the large managed runtime is rebuilt.
 
-Good enough for Phase 0 now means the managed `.app` and plain DMG can be rebuilt, notarized, stapled, Gatekeeper-assessed, launched from the mounted DMG, copied out of the mounted DMG, launched with the bundled managed Python runtime, and smoke-tested against `/health`, `/ready`, and `/api/version`. Visual DMG polish, `.pkg` packaging, updater work, and managed-runtime pruning are deferred unless a release consumer or distribution channel makes one of them a blocker. The next desktop work should move back to app features rather than expand packaging scope.
+Good enough for Phase 0 now means the managed `.app` and plain DMG can be rebuilt, notarized, stapled, Gatekeeper-assessed, launched from the mounted DMG with the packaged renderer, copied out of the mounted DMG, launched with the bundled managed Python runtime, and smoke-tested against `/health`, `/ready`, and `/api/version`. Visual DMG polish, `.pkg` packaging, updater work, and managed-runtime pruning are deferred unless a release consumer or distribution channel makes one of them a blocker. The next desktop work should move back to app features rather than expand packaging scope.
 
 ## Python Artifact Audit
 

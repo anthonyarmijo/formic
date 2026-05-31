@@ -14,6 +14,7 @@ const defaultRelocationDir = path.join(defaultRehearsalRoot, 'relocation path wi
 const defaultRuntimeDir = path.join(defaultRehearsalRoot, 'runtime-data');
 const defaultNotarizationDir = path.join(defaultRehearsalRoot, 'notarization');
 const defaultDmgDir = path.join(defaultRehearsalRoot, 'dmg');
+const defaultRendererBuildDir = path.join(defaultRehearsalRoot, 'renderer');
 const defaultPort = 18080;
 const defaultTimeoutMs = 180000;
 const managedPythonRequest = '3.11';
@@ -323,6 +324,36 @@ async function copyRootContext(bundleDir) {
   }
 }
 
+async function copyFrontendBuild(bundleDir) {
+  const source = process.env.FORMIC_REHEARSAL_RENDERER_BUILD_DIR
+    ? path.resolve(repoRoot, process.env.FORMIC_REHEARSAL_RENDERER_BUILD_DIR)
+    : defaultRendererBuildDir;
+  const destination = path.join(bundleDir, 'build');
+
+  await rm(destination, { recursive: true, force: true });
+
+  if (!(await pathExists(path.join(source, 'index.html')))) {
+    return false;
+  }
+
+  await cp(source, destination, {
+    recursive: true,
+    dereference: false,
+    verbatimSymlinks: true
+  });
+  return true;
+}
+
+async function buildFrontendForPackaging() {
+  await run('npm', ['run', 'build'], {
+    env: {
+      ...process.env,
+      FORMIC_FRONTEND_BUILD_DIR: defaultRendererBuildDir,
+      FORMIC_REHEARSAL_RENDERER_BUILD_DIR: defaultRendererBuildDir
+    }
+  });
+}
+
 async function validateBundle(bundleDir) {
   const missing = [];
 
@@ -383,6 +414,7 @@ async function buildBundle(options) {
   await mkdir(bundleDir, { recursive: true });
   const backendFileCount = await copyTrackedBackend(bundleDir);
   await copyRootContext(bundleDir);
+  await copyFrontendBuild(bundleDir);
   await rm(path.join(bundleDir, 'venv'), { recursive: true, force: true });
   await rm(path.join(bundleDir, 'python-runtime'), { recursive: true, force: true });
   await rm(path.join(bundleDir, 'requirements.lock.txt'), { force: true });
@@ -450,6 +482,7 @@ async function buildManagedRuntimeBundle(options) {
   await mkdir(bundleDir, { recursive: true });
   const backendFileCount = await copyTrackedBackend(bundleDir);
   await copyRootContext(bundleDir);
+  await copyFrontendBuild(bundleDir);
   await rm(path.join(bundleDir, '.venv'), { recursive: true, force: true });
   await rm(path.join(bundleDir, 'venv'), { recursive: true, force: true });
   await rm(runtimeDir, { recursive: true, force: true });
@@ -770,6 +803,23 @@ async function waitForEndpoint(url, validate, timeoutMs, assertStillValid = () =
   throw new Error(`Timed out waiting for ${url}${lastError ? `\nLast error: ${lastError.message}` : ''}`);
 }
 
+async function waitForOutputMarker(marker, getOutput, timeoutMs, assertStillValid = () => {}) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    assertStillValid();
+
+    if (getOutput().includes(marker)) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  assertStillValid();
+  throw new Error(`Timed out waiting for Electron output marker: ${marker}`);
+}
+
 function assertNoStartupFailureOutput(output) {
   const failureMarkers = [
     'Backend startup failed',
@@ -860,6 +910,7 @@ async function findPackagedApp(packageDir) {
 }
 
 async function packageResourcesApp(options, { managed = false, signingMode = 'unsigned', identity = '' } = {}) {
+  await buildFrontendForPackaging();
   const bundleDir = managed ? await buildManagedRuntimeBundle(options) : await buildBundle(options);
   await run('npm', ['run', 'build', '--workspace', '@formic/desktop']);
 
@@ -881,6 +932,7 @@ async function packageResourcesApp(options, { managed = false, signingMode = 'un
 
   const packagedApp = await findPackagedApp(packageDir);
   await validateBundle(packagedApp.serverDir);
+  await assertPackagedRendererBundle(packagedApp);
   console.log(`[formic-rehearsal] Packaged app ready: ${displayPath(packagedApp.appDir)}`);
   console.log(`[formic-rehearsal] Packaged resources server: ${displayPath(packagedApp.serverDir)}`);
   return packagedApp;
@@ -915,6 +967,16 @@ function assertPackagedResourceLaunchOutput(output, packagedApp, expectedLaunchM
   }
 }
 
+async function assertPackagedRendererBundle(packagedApp) {
+  const rendererIndexPath = path.join(packagedApp.serverDir, 'build', 'index.html');
+
+  if (!(await pathExists(rendererIndexPath))) {
+    throw new Error(`Packaged renderer build was not found at ${rendererIndexPath}.`);
+  }
+
+  console.log(`[formic-rehearsal] Packaged renderer build: ${displayPath(rendererIndexPath)}`);
+}
+
 async function ensurePortAvailable(port) {
   try {
     await probeJson(`http://127.0.0.1:${port}/health`, { timeoutMs: 500 });
@@ -928,7 +990,7 @@ async function ensurePortAvailable(port) {
 async function smokePackagedApp(
   packagedApp,
   options,
-  { managed = false, runtimeName = null, useDefaultDesktopBackendDirs = false } = {}
+  { managed = false, runtimeName = null, useDefaultDesktopBackendDirs = false, usePackagedRenderer = false } = {}
 ) {
   await ensurePortAvailable(options.port);
 
@@ -958,10 +1020,14 @@ async function smokePackagedApp(
     FORMIC_SERVER_MODE: 'spawn',
     FORMIC_SERVER_PORT: String(options.port),
     FORMIC_SERVER_URL: serverUrl,
-    FORMIC_RENDERER_URL: 'about:blank',
     FORMIC_SERVER_READY_TIMEOUT_MS: String(options.timeoutMs),
     FORMIC_LAZY_EMBEDDINGS: 'true'
   };
+  if (!usePackagedRenderer) {
+    env.FORMIC_RENDERER_URL = 'about:blank';
+  } else {
+    env.FORMIC_RENDERER_URL = serverUrl;
+  }
   if (useDefaultDesktopBackendDirs) {
     delete env.DATA_DIR;
     delete env.STATIC_DIR;
@@ -1010,6 +1076,15 @@ async function smokePackagedApp(
     }, options.timeoutMs, () => assertNoStartupFailureOutput(output));
 
     assertPackagedResourceLaunchOutput(output, packagedApp, managed ? 'bundled managed Python runtime' : 'bundled venv');
+
+    if (usePackagedRenderer) {
+      await waitForOutputMarker(
+        `[formic-desktop] Loaded renderer in Electron from ${serverUrl}`,
+        () => output,
+        options.timeoutMs,
+        () => assertNoStartupFailureOutput(output)
+      );
+    }
 
     console.log(
       `[formic-rehearsal] Packaged resources ${managed ? 'managed ' : ''}smoke passed: /health, /ready, /api/version=${version.version}`
@@ -1716,7 +1791,8 @@ async function dmgCheck(options) {
       {
         managed: true,
         runtimeName: 'resources-managed-dmg-mounted-smoke',
-        useDefaultDesktopBackendDirs: true
+        useDefaultDesktopBackendDirs: true,
+        usePackagedRenderer: true
       }
     );
     copiedApp = await copyAppFromMountedDmg(mountedAppDir);

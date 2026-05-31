@@ -35,7 +35,7 @@ const serverRoot =
 
 const serverPort = Number(process.env.FORMIC_SERVER_PORT ?? '8080');
 const serverUrl = process.env.FORMIC_SERVER_URL ?? `http://127.0.0.1:${serverPort}`;
-const rendererUrl = process.env.FORMIC_RENDERER_URL ?? 'http://127.0.0.1:5173';
+const rendererUrl = process.env.FORMIC_RENDERER_URL ?? (app.isPackaged ? serverUrl : 'http://127.0.0.1:5173');
 const healthUrl = new URL('/health', serverUrl).toString();
 const readinessUrl = new URL('/ready', serverUrl).toString();
 const serverReadyTimeoutMs = parseTimeout(process.env.FORMIC_SERVER_READY_TIMEOUT_MS, 120000);
