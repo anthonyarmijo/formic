@@ -63,10 +63,13 @@ npm run dev
 Open WebUI folders attach files via RAG — they get chunked, embedded, and searched for relevant snippets during chat. That's useful but narrow: each folder is an island with no memory across sessions.
 
 Formic Groups extend this:
+
 - **Group memory** — Hermes and Hindsight maintain persistent context across every chat in the group. Decisions, preferences, and project state survive between sessions.
 - **Live context** — Files aren't just embedded; agents can read them directly, run code, and apply edits.
 - **Shared instructions** — Group-level system prompts that evolve as the project does. The agents update them as they learn what you're building.
 - **Unified history** — Chronicle-lite indexes every group conversation. Search across months of chats in seconds.
+
+Open WebUI's built-in Memory remains global user memory. Formic Groups keep project context separate and pass provider-neutral group metadata to connected systems such as Hermes and Hindsight.
 
 ## License
 

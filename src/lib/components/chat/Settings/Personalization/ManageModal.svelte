@@ -97,7 +97,7 @@
 		<!-- Header -->
 		<div class="flex justify-between dark:text-gray-300 px-5 pt-4 pb-1">
 			<div class="flex items-center gap-2">
-				<div class="text-lg font-medium">{$i18n.t('Memory')}</div>
+				<div class="text-lg font-medium">{$i18n.t('Global User Memory')}</div>
 
 				{#if !loading}
 					<div class="text-lg font-medium text-gray-500 dark:text-gray-500">
@@ -146,7 +146,7 @@
 							class="text-xs text-gray-500 dark:text-gray-400 text-center px-5 min-h-20 w-full flex justify-center items-center"
 						>
 							{#if memories.length === 0}
-								{$i18n.t('Memories accessible by LLMs will be shown here.')}
+								{$i18n.t('Global user memories accessible by LLMs will be shown here.')}
 							{:else}
 								{$i18n.t('No results found')}
 							{/if}

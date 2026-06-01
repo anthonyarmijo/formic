@@ -86,7 +86,11 @@ from open_webui.utils.filter import (
     get_sorted_filter_ids,
     process_filter_functions,
 )
-
+from open_webui.utils.group_context import (
+    build_formic_group_context,
+    build_formic_hermes_context,
+    build_formic_memory_context,
+)
 from open_webui.utils.mcp.client import MCPClient
 from open_webui.utils.misc import (
     add_or_update_system_message,
@@ -2444,12 +2448,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if folder_id and user:
         folder = await Folders.get_folder_by_id_and_user_id(folder_id, user.id)
 
-        if folder and folder.data:
-            if 'system_prompt' in folder.data:
-                form_data = await apply_system_prompt_to_body(folder.data['system_prompt'], form_data, metadata, user)
-            if 'files' in folder.data:
+        if folder:
+            folder_data = folder.data or {}
+            allowed_files = []
+
+            if 'system_prompt' in folder_data:
+                form_data = await apply_system_prompt_to_body(folder_data['system_prompt'], form_data, metadata, user)
+            if 'files' in folder_data:
                 # Defensive: filter to entries the caller can still read.
-                allowed_files = await get_accessible_folder_files(folder.data['files'], user)
+                allowed_files = await get_accessible_folder_files(folder_data['files'], user)
                 if metadata.get('params', {}).get('function_calling') != 'native':
                     form_data['files'] = [
                         *allowed_files,
@@ -2459,6 +2466,17 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     # Native FC: skip RAG injection, builtin tools
                     # will read folder knowledge from metadata.
                     metadata['folder_knowledge'] = allowed_files
+
+            group_context = build_formic_group_context(
+                folder=folder,
+                user_id=user.id,
+                chat_id=chat_id,
+                file_refs=allowed_files,
+            )
+            if group_context:
+                metadata['formic_group_context'] = group_context
+                metadata['formic_memory_context'] = build_formic_memory_context(group_context)
+                metadata['formic_hermes'] = build_formic_hermes_context(group_context)
 
     # Model "Knowledge" handling
     user_message = get_last_user_message(form_data['messages'])

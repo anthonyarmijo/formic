@@ -39,7 +39,7 @@
 					)}
 				>
 					<div class="flex items-center gap-2 text-sm font-medium">
-						{$i18n.t('Memory')}
+						{$i18n.t('Global User Memory')}
 						<span
 							class="text-[0.65rem] font-medium uppercase px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400"
 							>{$i18n.t('Experimental')}</span
@@ -61,7 +61,7 @@
 		<div class="text-xs text-gray-600 dark:text-gray-400">
 			<div>
 				{$i18n.t(
-					"You can personalize your interactions with LLMs by adding memories through the 'Manage' button below, making them more helpful and tailored to you."
+					'Global user memories personalize your interactions across chats. Project and group memory is handled separately by Formic Groups and connected providers.'
 				)}
 			</div>
 
