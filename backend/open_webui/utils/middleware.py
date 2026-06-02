@@ -134,6 +134,8 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 
+FORMIC_LOCAL_TERMINAL_ID = 'formic-local-terminal'
+
 
 # We believe in one maker of all models, seen and unseen,
 # and in the reasoning which proceeds from the architect.
@@ -156,6 +158,36 @@ DEFAULT_CODE_INTERPRETER_TAGS = [('<code_interpreter>', '</code_interpreter>')]
 def output_id(prefix: str) -> str:
     """Generate OR-style ID: prefix + 24-char hex UUID."""
     return f'{prefix}_{uuid4().hex[:24]}'
+
+
+def get_formic_project_terminal_context(metadata: dict, folder_id: str | None) -> dict[str, str] | None:
+    group_context = metadata.get('formic_group_context')
+    if not isinstance(group_context, dict):
+        return None
+
+    if group_context.get('group_type') != 'project':
+        return None
+
+    project_path = group_context.get('project_path')
+    if not isinstance(project_path, str) or not os.path.isabs(project_path):
+        return None
+
+    group_id = group_context.get('group_id') or folder_id
+    if not isinstance(group_id, str) or not group_id:
+        return None
+
+    return {
+        'project_path': project_path,
+        'session_id': f'formic-group:{group_id}',
+    }
+
+
+def has_enabled_terminal_connection(request, terminal_id: str) -> bool:
+    connections = request.app.state.config.TERMINAL_SERVER_CONNECTIONS or []
+    return any(
+        connection.get('id') == terminal_id and connection.get('enabled', True)
+        for connection in connections
+    )
 
 
 def _split_tool_calls(
@@ -2605,7 +2637,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     tool_ids = form_data.pop('tool_ids', None)
     terminal_id = form_data.pop('terminal_id', None)
     files = form_data.pop('files', None)
-    form_data.pop('folder_id', None)
+    body_folder_id = form_data.pop('folder_id', None)
 
     # If the original caller provided tools, use them as-is (skip resolution).
     # Otherwise, save any tools that filter inlets added for merging later.
@@ -2677,6 +2709,18 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         # Remove duplicate files based on their content
         files = list({json.dumps(f, sort_keys=True): f for f in files}.values())
 
+    terminal_capability = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('terminal', True)
+    project_terminal_context = get_formic_project_terminal_context(metadata, folder_id or body_folder_id)
+    terminal_auto_selected = False
+    if (
+        not terminal_id
+        and terminal_capability
+        and project_terminal_context
+        and has_enabled_terminal_connection(request, FORMIC_LOCAL_TERMINAL_ID)
+    ):
+        terminal_id = FORMIC_LOCAL_TERMINAL_ID
+        terminal_auto_selected = True
+
     metadata = {
         **metadata,
         'model_id': form_data.get('model'),
@@ -2684,6 +2728,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         'terminal_id': terminal_id,
         'files': files,
     }
+    if project_terminal_context and terminal_id:
+        metadata['terminal_session_id'] = project_terminal_context['session_id']
+        metadata['terminal_project_path'] = project_terminal_context['project_path']
+        metadata['terminal_project_cwd_requested'] = True
+    if terminal_auto_selected:
+        metadata['terminal_auto_selected'] = True
     form_data['metadata'] = metadata
 
     # When the caller provides an explicit OpenAI-style `tools` array in the
@@ -2773,12 +2823,16 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
         # Resolve terminal tools if terminal_id is set (outside tool_ids check
         # so system terminals work even when no other tools are selected)
-        terminal_capability = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('terminal', True)
         terminal_diagnostics = None
         if terminal_id:
             terminal_diagnostics = {
                 'terminal_id': terminal_id,
                 'model_terminal_capability': bool(terminal_capability),
+                'auto_selected': terminal_auto_selected,
+                'session_id': metadata.get('terminal_session_id'),
+                'project_path': metadata.get('terminal_project_path'),
+                'project_cwd_requested': bool(metadata.get('terminal_project_cwd_requested')),
+                'project_cwd_set': False,
                 'tool_count': 0,
                 'tools_injected': False,
                 'system_prompt_injected': False,

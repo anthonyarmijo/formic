@@ -100,10 +100,17 @@ else
   ARGS=(--workers "$UVICORN_WORKERS")
 fi
 
-# Start bundled Open Terminal for Project group terminal access
-if command -v open-terminal &> /dev/null; then
-  echo "Starting Formic Terminal server..."
-  open-terminal run --host 127.0.0.1 --port 8000 --api-key formic-terminal-key &
+# Formic desktop owns its local OpenTerminal lifecycle, port, and generated API
+# key. This legacy server entrypoint hook is opt-in only to avoid accidentally
+# starting a second terminal with a fixed credential once open-terminal is
+# installed in the Python environment.
+if [[ "${FORMIC_LEGACY_OPEN_TERMINAL_AUTOSTART:-0}" == "1" ]] && command -v open-terminal &> /dev/null; then
+  if [[ -z "${FORMIC_TERMINAL_KEY:-}" ]]; then
+    echo "FORMIC_TERMINAL_KEY is required for FORMIC_LEGACY_OPEN_TERMINAL_AUTOSTART=1" >&2
+    exit 1
+  fi
+  echo "Starting legacy Formic Terminal server..."
+  open-terminal run --host 127.0.0.1 --port "${FORMIC_TERMINAL_PORT:-8000}" --api-key "$FORMIC_TERMINAL_KEY" &
 fi
 
 exec env WEBUI_SECRET_KEY="${WEBUI_SECRET_KEY:-}" \

@@ -22,12 +22,20 @@ Useful environment overrides:
 - `FORMIC_SERVER_BUNDLE_DIR=/path/to/server-root`
 - `FORMIC_SERVER_LOG_LINES=24`
 - `FORMIC_PYTHON=/path/to/python`
+- `FORMIC_TERMINAL_MODE=auto|disabled|external`
+- `FORMIC_TERMINAL_PORT=18082`
+- `FORMIC_TERMINAL_URL=http://127.0.0.1:18082`
+- `FORMIC_TERMINAL_READY_TIMEOUT_MS=60000`
 
 ## Desktop Login and Terminal Tools
 
 The desktop shell persists the signed-in session token in Electron user data so reopening the app can reuse the normal authenticated session without storing the password. `safeStorage` encryption is used when the OS provides it; otherwise the token falls back to a local JSON file under the desktop user-data directory. Signing out or failing session validation clears both `localStorage.token` and the desktop copy.
 
-Project directories are context for the selected Group. They do not grant hosted models direct filesystem access by themselves. File/folder interaction requires an enabled terminal or file-capable tool provider, such as a system OpenTerminal connection, selected for the chat.
+Electron also manages a local OpenTerminal sidecar by default in desktop mode. It stores a generated API key in Electron user data using `safeStorage` when available, launches OpenTerminal on `127.0.0.1:${FORMIC_TERMINAL_PORT:-18082}`, and registers it after desktop login as the user-scoped system terminal `formic-local-terminal` / `Formic Local Terminal`. Set `FORMIC_TERMINAL_MODE=disabled` to turn this off, or `FORMIC_TERMINAL_MODE=external` with `FORMIC_TERMINAL_URL` and `FORMIC_TERMINAL_KEY` to register a separately managed terminal.
+
+Project directories are context for the selected Group. They do not grant hosted models direct filesystem access by themselves. In desktop, Project Groups with a normalized `project_path` auto-use the managed local terminal for terminal-capable models when no explicit terminal is selected. The terminal session key is `formic-group:<folder_id>`, and Electron/backend set that session CWD to the Project path before terminal tools are resolved.
+
+This is trusted local bare-metal access. The current boundary is clear UI, diagnostics, and default CWD, not an OS sandbox. A Docker or orchestrated sandbox path remains a future public-release hardening option.
 
 For DeepSeek or any other model that should have terminal access, diagnose the tool path in this order:
 

@@ -1004,6 +1004,35 @@ async def get_terminal_cwd(
     return None
 
 
+async def set_terminal_cwd(
+    base_url: str,
+    headers: dict,
+    path: str,
+    cookies: dict | None = None,
+) -> bool:
+    """Set the current working directory on a terminal server session."""
+    try:
+        cwd_url = f'{base_url.rstrip("/")}/files/cwd'
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=5),
+            trust_env=True,
+        ) as session:
+            async with session.post(
+                cwd_url,
+                json={'path': path},
+                headers=headers,
+                cookies=cookies or {},
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as resp:
+                if resp.status in (200, 204):
+                    return True
+                body = await resp.text()
+                log.debug(f'Failed to set terminal CWD: {resp.status} {body[:240]}')
+    except Exception as e:
+        log.debug(f'Failed to set terminal CWD: {e}')
+    return False
+
+
 async def get_terminal_system_prompt(
     base_url: str,
     headers: dict,
@@ -1177,11 +1206,19 @@ async def get_terminal_tools(
 
     system_prompt = server_data.get('system_prompt')
 
-    # Use chat_id as the per-session key for cwd tracking
+    # Use stable Formic project session ids for project cwd tracking; fall
+    # back to chat_id for existing terminal behavior.
     metadata = extra_params.get('__metadata__', {})
-    session_id = metadata.get('chat_id')
+    session_id = metadata.get('terminal_session_id') or metadata.get('chat_id')
     if session_id:
         headers['X-Session-Id'] = session_id
+
+    terminal_project_path = metadata.get('terminal_project_path')
+    if isinstance(terminal_project_path, str) and terminal_project_path:
+        cwd_set = await set_terminal_cwd(connection.get('url', ''), headers, terminal_project_path, cookies)
+        diagnostics = metadata.get('terminal_diagnostics')
+        if isinstance(diagnostics, dict):
+            diagnostics['project_cwd_set'] = cwd_set
 
     terminal_cwd = await get_terminal_cwd(connection.get('url', ''), headers, cookies)
 

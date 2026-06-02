@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, type OpenDialogOptions } from 'electron';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 type ServerMode = 'auto' | 'spawn' | 'external';
 type ActiveServerMode = 'auto' | 'spawn' | 'existing' | 'spawned' | 'external';
 type ServerStatus = 'checking' | 'starting' | 'healthy' | 'ready' | 'failed';
+type TerminalMode = 'auto' | 'disabled' | 'external';
+type TerminalStatus = 'disabled' | 'checking' | 'starting' | 'ready' | 'failed';
 type RendererStatus =
 	| 'waiting'
 	| 'checking'
@@ -32,6 +35,15 @@ type ServerLaunchPlan = {
 	error?: string;
 };
 
+type TerminalLaunchPlan = {
+	command: string;
+	args: string[];
+	cwd: string;
+	url: string;
+	source: string;
+	error?: string;
+};
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../..');
 const packagedServerRoot = path.join(process.resourcesPath, 'formic-server');
@@ -50,20 +62,38 @@ const healthUrl = new URL('/health', serverUrl).toString();
 const readinessUrl = new URL('/ready', serverUrl).toString();
 const serverReadyTimeoutMs = parseTimeout(process.env.FORMIC_SERVER_READY_TIMEOUT_MS, 120000);
 const rendererReadyTimeoutMs = parseTimeout(process.env.FORMIC_RENDERER_READY_TIMEOUT_MS, 120000);
+const terminalReadyTimeoutMs = parseTimeout(process.env.FORMIC_TERMINAL_READY_TIMEOUT_MS, 60000);
 const serverLogLineLimit = parseTimeout(process.env.FORMIC_SERVER_LOG_LINES, 24);
+const terminalLogLineLimit = parseTimeout(process.env.FORMIC_TERMINAL_LOG_LINES, 24);
 const configuredServerMode = parseServerMode(process.env.FORMIC_SERVER_MODE);
+const configuredTerminalMode = parseTerminalMode(process.env.FORMIC_TERMINAL_MODE);
 const desktopSessionTokenFileName = 'desktop-session-token.json';
+const desktopTerminalKeyFileName = 'desktop-terminal-key.json';
+const localTerminalId = 'formic-local-terminal';
+const localTerminalName = 'Formic Local Terminal';
+const terminalPort = Number(process.env.FORMIC_TERMINAL_PORT ?? '18082');
+const terminalUrl =
+	process.env.FORMIC_TERMINAL_URL ?? `http://127.0.0.1:${terminalPort}`;
+const terminalConfigUrl = new URL('/api/config', terminalUrl).toString();
 
 let serverProcess: ChildProcessWithoutNullStreams | null = null;
+let terminalProcess: ChildProcessWithoutNullStreams | null = null;
 let serverStatus: ServerStatus = 'checking';
+let terminalStatus: TerminalStatus =
+	configuredTerminalMode === 'disabled' ? 'disabled' : 'checking';
 let rendererStatus: RendererStatus = 'waiting';
 let activeServerMode: ActiveServerMode = configuredServerMode;
 let lastServerError: string | null = null;
 let lastServerProbe: string | null = null;
+let lastTerminalError: string | null = null;
+let lastTerminalProbe: string | null = null;
+let lastTerminalRegistration: string | null = null;
 let lastRendererError: string | null = null;
 let lastRendererProbe: string | null = null;
 let activeServerLaunchPlan: ServerLaunchPlan | null = null;
+let activeTerminalLaunchPlan: TerminalLaunchPlan | null = null;
 const recentServerOutput: string[] = [];
+const recentTerminalOutput: string[] = [];
 let isQuitting = false;
 
 function parseServerMode(mode: string | undefined): ServerMode {
@@ -72,6 +102,14 @@ function parseServerMode(mode: string | undefined): ServerMode {
 	}
 
 	return app.isPackaged ? 'auto' : 'spawn';
+}
+
+function parseTerminalMode(mode: string | undefined): TerminalMode {
+	if (mode === 'disabled' || mode === 'external') {
+		return mode;
+	}
+
+	return 'auto';
 }
 
 function parseTimeout(value: string | undefined, fallbackMs: number): number {
@@ -89,6 +127,10 @@ function desktopUserDataDir(): string {
 
 function desktopSessionTokenPath(): string {
 	return path.join(desktopUserDataDir(), desktopSessionTokenFileName);
+}
+
+function desktopTerminalKeyPath(): string {
+	return path.join(desktopUserDataDir(), desktopTerminalKeyFileName);
 }
 
 function getDesktopSessionToken(): string | null {
@@ -130,6 +172,56 @@ function getDesktopSessionToken(): string | null {
 	}
 
 	return null;
+}
+
+function getDesktopTerminalKey(): string {
+	if (process.env.FORMIC_TERMINAL_KEY?.trim()) {
+		return process.env.FORMIC_TERMINAL_KEY.trim();
+	}
+
+	const tokenPath = desktopTerminalKeyPath();
+	if (existsSync(tokenPath)) {
+		try {
+			const payload = JSON.parse(readFileSync(tokenPath, 'utf8')) as {
+				encoding?: string;
+				value?: string;
+			};
+
+			if (payload.value) {
+				if (payload.encoding === 'safeStorage') {
+					if (safeStorage.isEncryptionAvailable()) {
+						return safeStorage.decryptString(Buffer.from(payload.value, 'base64'));
+					}
+
+					console.warn(
+						'[formic-desktop] Stored terminal key is encrypted, but safeStorage is unavailable.'
+					);
+				} else if (payload.encoding === 'plain') {
+					return payload.value;
+				}
+			}
+		} catch (error) {
+			console.warn(
+				`[formic-desktop] Could not read stored desktop terminal key: ${
+					error instanceof Error ? error.message : String(error)
+				}`
+			);
+		}
+	}
+
+	const key = randomBytes(32).toString('hex');
+	mkdirSync(path.dirname(tokenPath), { recursive: true });
+	const payload = safeStorage.isEncryptionAvailable()
+		? {
+				encoding: 'safeStorage',
+				value: safeStorage.encryptString(key).toString('base64')
+			}
+		: {
+				encoding: 'plain',
+				value: key
+			};
+	writeFileSync(tokenPath, JSON.stringify(payload), { mode: 0o600 });
+	return key;
 }
 
 function setDesktopSessionToken(token: unknown): boolean {
@@ -234,6 +326,20 @@ function bundledPythonCandidates(root: string): string[] {
 			];
 }
 
+function bundledOpenTerminalCandidates(root: string): string[] {
+	return process.platform === 'win32'
+		? [
+				path.join(root, '.venv', 'Scripts', 'open-terminal.exe'),
+				path.join(root, 'venv', 'Scripts', 'open-terminal.exe'),
+				path.join(root, 'python-runtime', 'Scripts', 'open-terminal.exe')
+			]
+		: [
+				path.join(root, '.venv', 'bin', 'open-terminal'),
+				path.join(root, 'venv', 'bin', 'open-terminal'),
+				path.join(root, 'python-runtime', 'bin', 'open-terminal')
+			];
+}
+
 function missingServerRootFiles(root: string, backendDir: string): string[] {
 	const required: Array<[string, string]> = [
 		['backend directory', backendDir],
@@ -253,6 +359,71 @@ function missingServerRootFiles(root: string, backendDir: string): string[] {
 	return required
 		.filter(([, filePath]) => !existsSync(filePath))
 		.map(([label, filePath]) => `${label}: ${filePath}`);
+}
+
+function buildTerminalLaunchPlan(): TerminalLaunchPlan {
+	if (configuredTerminalMode === 'disabled') {
+		return {
+			command: '',
+			args: [],
+			cwd: serverRoot,
+			url: terminalUrl,
+			source: 'FORMIC_TERMINAL_MODE=disabled',
+			error: 'Terminal sidecar is disabled.'
+		};
+	}
+
+	if (configuredTerminalMode === 'external') {
+		return {
+			command: '',
+			args: [],
+			cwd: serverRoot,
+			url: terminalUrl,
+			source: 'FORMIC_TERMINAL_MODE=external'
+		};
+	}
+
+	const key = getDesktopTerminalKey();
+	const launchArgs = ['run', '--host', '127.0.0.1', '--port', String(terminalPort), '--api-key', key];
+	const bundledPython = shouldUseBundledServerRoot ? findBundledPython(serverRoot) : null;
+
+	if (bundledPython) {
+		const openTerminalScript = bundledOpenTerminalCandidates(serverRoot).find((candidate) =>
+			existsSync(candidate)
+		);
+
+		if (!openTerminalScript) {
+			return {
+				command: '',
+				args: [],
+				cwd: serverRoot,
+				url: terminalUrl,
+				source: 'missing bundled OpenTerminal',
+				error: [
+					`Bundled server root was selected at ${serverRoot}, but no OpenTerminal console script was found.`,
+					`Expected one of:\n${bundledOpenTerminalCandidates(serverRoot)
+						.map((candidate) => `- ${candidate}`)
+						.join('\n')}`
+				].join('\n')
+			};
+		}
+
+		return {
+			command: bundledPython,
+			args: [openTerminalScript, ...launchArgs],
+			cwd: serverRoot,
+			url: terminalUrl,
+			source: 'bundled managed OpenTerminal sidecar'
+		};
+	}
+
+	return {
+		command: 'uv',
+		args: ['run', '--frozen', '--project', serverRoot, 'open-terminal', ...launchArgs],
+		cwd: serverRoot,
+		url: terminalUrl,
+		source: 'uv lockfile OpenTerminal sidecar'
+	};
 }
 
 function buildServerLaunchPlan(): ServerLaunchPlan {
@@ -324,6 +495,23 @@ function buildServerLaunchPlan(): ServerLaunchPlan {
 	};
 }
 
+function formatTerminalLaunchPlan(plan: TerminalLaunchPlan | null): string {
+	if (!plan) {
+		return 'not selected';
+	}
+
+	if (!plan.command) {
+		return [`source=${plan.source}`, `url=${plan.url}`].join('\n');
+	}
+
+	return [
+		`${plan.command} ${plan.args.join(' ')}`,
+		`source=${plan.source}`,
+		`cwd=${plan.cwd}`,
+		`url=${plan.url}`
+	].join('\n');
+}
+
 function formatServerLaunchPlan(plan: ServerLaunchPlan | null): string {
 	if (!plan) {
 		return 'not selected';
@@ -335,6 +523,22 @@ function formatServerLaunchPlan(plan: ServerLaunchPlan | null): string {
 		`cwd=${plan.cwd}`,
 		`pythonpath=${plan.backendDir}`
 	].join('\n');
+}
+
+function recordTerminalOutput(stream: 'stdout' | 'stderr', chunk: Buffer): void {
+	const lines = chunk
+		.toString()
+		.split(/\r?\n/)
+		.map((line) => line.trimEnd())
+		.filter(Boolean);
+
+	for (const line of lines) {
+		recentTerminalOutput.push(`[${stream}] ${line.slice(0, 1000)}`);
+	}
+
+	while (recentTerminalOutput.length > terminalLogLineLimit) {
+		recentTerminalOutput.shift();
+	}
 }
 
 function recordServerOutput(stream: 'stdout' | 'stderr', chunk: Buffer): void {
@@ -418,6 +622,40 @@ async function probeUrl(
 	}
 }
 
+async function probeTerminalConfig(timeoutMs = 1200): Promise<ProbeResult> {
+	if (configuredTerminalMode === 'disabled') {
+		return { ok: false, detail: 'Terminal sidecar is disabled.' };
+	}
+
+	try {
+		const response = await fetch(terminalConfigUrl, {
+			headers: {
+				Authorization: `Bearer ${getDesktopTerminalKey()}`
+			},
+			signal: AbortSignal.timeout(timeoutMs)
+		});
+		const body = await response.text();
+		const bodyPreview = body.trim().slice(0, 240);
+
+		if (!response.ok) {
+			return {
+				ok: false,
+				statusCode: response.status,
+				detail: `Terminal config responded ${response.status}${bodyPreview ? `: ${bodyPreview}` : ''}`
+			};
+		}
+
+		return {
+			ok: true,
+			statusCode: response.status,
+			detail: `Terminal config responded ${response.status}`
+		};
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, detail: `Terminal config probe failed: ${message}` };
+	}
+}
+
 async function waitForServer(timeoutMs = serverReadyTimeoutMs): Promise<void> {
 	const startedAt = Date.now();
 
@@ -458,6 +696,44 @@ async function waitForServer(timeoutMs = serverReadyTimeoutMs): Promise<void> {
 			`Timed out waiting for Formic server readiness at ${readinessUrl}`,
 			lastServerProbe ? `Last probe: ${lastServerProbe}` : null,
 			lastServerError ? `Last server error: ${lastServerError}` : null
+		]
+			.filter(Boolean)
+			.join('\n')
+	);
+}
+
+async function waitForTerminal(timeoutMs = terminalReadyTimeoutMs): Promise<void> {
+	if (configuredTerminalMode === 'disabled') {
+		terminalStatus = 'disabled';
+		return;
+	}
+
+	const startedAt = Date.now();
+
+	while (Date.now() - startedAt < timeoutMs) {
+		if (lastTerminalError && !terminalProcess && configuredTerminalMode === 'auto') {
+			terminalStatus = 'failed';
+			throw new Error(lastTerminalError);
+		}
+
+		const probe = await probeTerminalConfig();
+		lastTerminalProbe = probe.detail;
+
+		if (probe.ok) {
+			terminalStatus = 'ready';
+			console.log(`[formic-desktop] Terminal sidecar ready at ${terminalUrl}`);
+			return;
+		}
+
+		await sleep(500);
+	}
+
+	terminalStatus = 'failed';
+	throw new Error(
+		[
+			`Timed out waiting for Formic terminal sidecar at ${terminalUrl}`,
+			lastTerminalProbe ? `Last probe: ${lastTerminalProbe}` : null,
+			lastTerminalError ? `Last terminal error: ${lastTerminalError}` : null
 		]
 			.filter(Boolean)
 			.join('\n')
@@ -609,6 +885,64 @@ function spawnServer(): void {
 	});
 }
 
+function spawnTerminal(): void {
+	if (configuredTerminalMode === 'disabled' || configuredTerminalMode === 'external') {
+		return;
+	}
+
+	if (terminalProcess) {
+		return;
+	}
+
+	const launchPlan = buildTerminalLaunchPlan();
+	activeTerminalLaunchPlan = launchPlan;
+	recentTerminalOutput.length = 0;
+
+	if (launchPlan.error) {
+		terminalStatus = 'failed';
+		lastTerminalError = launchPlan.error;
+		return;
+	}
+
+	console.log(
+		`[formic-desktop] Terminal launch plan: ${launchPlan.command} ${launchPlan.args.join(' ')} (${launchPlan.source})`
+	);
+
+	terminalProcess = spawn(launchPlan.command, launchPlan.args, {
+		cwd: launchPlan.cwd,
+		env: {
+			...process.env,
+			FORMIC_DESKTOP: 'true',
+			PYTHONDONTWRITEBYTECODE: process.env.PYTHONDONTWRITEBYTECODE ?? '1'
+		}
+	});
+
+	terminalProcess.stdout.on('data', (chunk) => {
+		recordTerminalOutput('stdout', chunk);
+		console.log(`[formic-terminal] ${chunk.toString().trimEnd()}`);
+	});
+
+	terminalProcess.stderr.on('data', (chunk) => {
+		recordTerminalOutput('stderr', chunk);
+		console.error(`[formic-terminal] ${chunk.toString().trimEnd()}`);
+	});
+
+	terminalProcess.once('error', (error) => {
+		terminalStatus = 'failed';
+		lastTerminalError = `Failed to start terminal process: ${error.message}`;
+		terminalProcess = null;
+	});
+
+	terminalProcess.once('exit', (code, signal) => {
+		if (!isQuitting) {
+			terminalStatus = 'failed';
+			lastTerminalError = `Terminal exited with code ${code ?? 'null'} and signal ${signal ?? 'null'}`;
+		}
+
+		terminalProcess = null;
+	});
+}
+
 async function ensureServer(): Promise<void> {
 	serverStatus = 'checking';
 	lastServerError = null;
@@ -664,6 +998,121 @@ async function ensureServer(): Promise<void> {
 	await waitForServer();
 }
 
+async function ensureTerminal(): Promise<void> {
+	lastTerminalError = null;
+	lastTerminalProbe = null;
+	lastTerminalRegistration = null;
+
+	if (configuredTerminalMode === 'disabled') {
+		terminalStatus = 'disabled';
+		activeTerminalLaunchPlan = buildTerminalLaunchPlan();
+		return;
+	}
+
+	terminalStatus = 'checking';
+	activeTerminalLaunchPlan = buildTerminalLaunchPlan();
+
+	const probe = await probeTerminalConfig();
+	lastTerminalProbe = probe.detail;
+	if (probe.ok) {
+		terminalStatus = 'ready';
+		return;
+	}
+
+	if (configuredTerminalMode === 'external') {
+		terminalStatus = 'failed';
+		lastTerminalError = probe.detail;
+		return;
+	}
+
+	terminalStatus = 'starting';
+	spawnTerminal();
+	await waitForTerminal();
+}
+
+async function fetchDesktopJson(url: string, token: string, init: RequestInit = {}): Promise<unknown> {
+	const response = await fetch(url, {
+		...init,
+		headers: {
+			Accept: 'application/json',
+			Authorization: `Bearer ${token}`,
+			...(init.body ? { 'Content-Type': 'application/json' } : {}),
+			...(init.headers ?? {})
+		}
+	});
+	const text = await response.text();
+
+	if (!response.ok) {
+		throw new Error(`${response.status} ${response.statusText}${text ? `: ${text.slice(0, 240)}` : ''}`);
+	}
+
+	return text ? JSON.parse(text) : null;
+}
+
+async function registerManagedTerminal(token: string | null): Promise<void> {
+	if (!token || configuredTerminalMode === 'disabled') {
+		return;
+	}
+
+	if (terminalStatus !== 'ready') {
+		lastTerminalRegistration = `skipped: terminal sidecar is ${terminalStatus}`;
+		return;
+	}
+
+	const authUrl = new URL('/api/v1/auths/', serverUrl).toString();
+	const configUrl = new URL('/api/v1/configs/terminal_servers', serverUrl).toString();
+
+	try {
+		const user = (await fetchDesktopJson(authUrl, token)) as {
+			id?: string;
+			role?: string;
+		};
+
+		if (!user?.id || user.role !== 'admin') {
+			lastTerminalRegistration = 'skipped: signed-in user is not an admin';
+			return;
+		}
+
+		const existingConfig = (await fetchDesktopJson(configUrl, token)) as {
+			TERMINAL_SERVER_CONNECTIONS?: Array<Record<string, unknown>>;
+		};
+		const connections = existingConfig.TERMINAL_SERVER_CONNECTIONS ?? [];
+		const localConnection = {
+			id: localTerminalId,
+			name: localTerminalName,
+			url: terminalUrl,
+			path: '/openapi.json',
+			auth_type: 'bearer',
+			key: getDesktopTerminalKey(),
+			enabled: true,
+			config: {
+				access_grants: [
+					{
+						permission: 'read',
+						principal_type: 'user',
+						principal_id: user.id
+					}
+				]
+			}
+		};
+		const mergedConnections = [
+			...connections.filter((connection) => connection.id !== localTerminalId),
+			localConnection
+		];
+
+		await fetchDesktopJson(configUrl, token, {
+			method: 'POST',
+			body: JSON.stringify({ TERMINAL_SERVER_CONNECTIONS: mergedConnections })
+		});
+
+		lastTerminalRegistration = `registered ${localTerminalName} for ${user.id}`;
+		console.log(`[formic-desktop] ${lastTerminalRegistration}`);
+	} catch (error) {
+		lastTerminalRegistration = `failed: ${error instanceof Error ? error.message : String(error)}`;
+		console.warn(`[formic-desktop] Terminal registration ${lastTerminalRegistration}`);
+	}
+}
+
 function htmlDataUrl(html: string): string {
 	return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
@@ -693,9 +1142,11 @@ function startupHtml(): string {
 		'<div class="bar"><span></span></div>',
 		'<dl>',
 		'<dt>Backend</dt><dd id="backend">checking</dd>',
+		'<dt>Terminal</dt><dd id="terminal">checking</dd>',
 		'<dt>Renderer</dt><dd id="renderer">waiting</dd>',
 		'<dt>Mode</dt><dd id="mode">auto</dd>',
 		'<dt>Backend URL</dt><dd id="server"></dd>',
+		'<dt>Terminal URL</dt><dd id="terminal-url"></dd>',
 		'<dt>Renderer URL</dt><dd id="renderer-url"></dd>',
 		'<dt>Last probe</dt><dd id="probe"></dd>',
 		'</dl>',
@@ -704,6 +1155,7 @@ function startupHtml(): string {
 		'function messageFor(state) {',
 		'  if (state.serverStatus === "starting") return "Starting the bundled FastAPI sidecar...";',
 		'  if (state.serverStatus === "healthy") return "Backend is healthy; waiting for readiness...";',
+		'  if (state.terminalStatus === "starting") return "Starting the local terminal sidecar...";',
 		'  if (state.rendererStatus === "skipped") return "API-only smoke is running without loading a renderer.";',
 		'  if (state.serverStatus === "ready" && state.rendererStatus !== "ready") return "Backend is ready; waiting for the Svelte renderer...";',
 		'  if (state.rendererStatus === "loading") return "Loading the Formic app...";',
@@ -713,11 +1165,13 @@ function startupHtml(): string {
 		'  if (!window.formicDesktop) return;',
 		'  const state = await window.formicDesktop.getServerStatus();',
 		'  document.getElementById("backend").textContent = state.serverStatus;',
+		'  document.getElementById("terminal").textContent = state.terminalStatus;',
 		'  document.getElementById("renderer").textContent = state.rendererStatus;',
-		'  document.getElementById("mode").textContent = state.mode;',
+		'  document.getElementById("mode").textContent = state.mode + " / " + state.terminalMode;',
 		'  document.getElementById("server").textContent = state.serverUrl;',
+		'  document.getElementById("terminal-url").textContent = state.terminalUrl;',
 		'  document.getElementById("renderer-url").textContent = state.rendererUrl;',
-		'  document.getElementById("probe").textContent = state.lastServerProbe || state.lastRendererProbe || "";',
+		'  document.getElementById("probe").textContent = state.lastServerProbe || state.lastTerminalProbe || state.lastRendererProbe || "";',
 		'  document.getElementById("message").textContent = messageFor(state);',
 		'}',
 		'refresh(); setInterval(refresh, 500);',
@@ -791,6 +1245,16 @@ async function createWindow(): Promise<void> {
 	}
 
 	try {
+		await ensureTerminal();
+		await registerManagedTerminal(getDesktopSessionToken());
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		lastTerminalError = message;
+		terminalStatus = 'failed';
+		console.warn(`[formic-desktop] Terminal sidecar startup failed: ${message}`);
+	}
+
+	try {
 		await waitForRenderer();
 
 		if (shouldSkipRendererLoad()) {
@@ -815,20 +1279,28 @@ async function createWindow(): Promise<void> {
 ipcMain.handle('formic:server-status', () => ({
 	status: serverStatus,
 	serverStatus,
+	terminalStatus,
 	rendererStatus,
 	mode: activeServerMode,
 	configuredMode: configuredServerMode,
+	terminalMode: configuredTerminalMode,
 	serverUrl,
+	terminalUrl,
 	healthUrl,
 	readinessUrl,
 	rendererUrl,
 	lastServerError,
 	lastServerProbe,
+	lastTerminalError,
+	lastTerminalProbe,
+	lastTerminalRegistration,
 	lastRendererError,
 	lastRendererProbe,
 	serverRoot,
 	serverLaunchPlan: activeServerLaunchPlan,
-	recentServerOutput
+	terminalLaunchPlan: activeTerminalLaunchPlan,
+	recentServerOutput,
+	recentTerminalOutput
 }));
 
 ipcMain.handle('formic:select-project-directory', async () => {
@@ -849,9 +1321,13 @@ ipcMain.handle('formic:select-project-directory', async () => {
 
 ipcMain.handle('formic:get-session-token', () => getDesktopSessionToken());
 
-ipcMain.handle('formic:set-session-token', (_event, token: unknown) =>
-	setDesktopSessionToken(token)
-);
+ipcMain.handle('formic:set-session-token', async (_event, token: unknown) => {
+	const saved = setDesktopSessionToken(token);
+	if (saved && typeof token === 'string') {
+		await registerManagedTerminal(token);
+	}
+	return saved;
+});
 
 ipcMain.handle('formic:clear-session-token', () => clearDesktopSessionToken());
 
@@ -872,15 +1348,19 @@ app.on('activate', () => {
 app.on('before-quit', async () => {
 	isQuitting = true;
 
-	if (!serverProcess) {
-		return;
+	const children = [terminalProcess, serverProcess].filter(
+		(child): child is ChildProcessWithoutNullStreams => Boolean(child)
+	);
+
+	for (const child of children) {
+		child.kill('SIGTERM');
 	}
 
-	const child = serverProcess;
-	child.kill('SIGTERM');
-	await Promise.race([once(child, 'exit'), sleep(3000)]);
+	await Promise.race([Promise.all(children.map((child) => once(child, 'exit'))), sleep(3000)]);
 
-	if (child.exitCode === null && child.signalCode === null) {
-		child.kill('SIGKILL');
+	for (const child of children) {
+		if (child.exitCode === null && child.signalCode === null) {
+			child.kill('SIGKILL');
+		}
 	}
 });

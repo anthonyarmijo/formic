@@ -2,7 +2,14 @@
 	import { getContext } from 'svelte';
 	import { goto } from '$app/navigation';
 
-	import { settings, showSettings, terminalServers, selectedTerminalId, user } from '$lib/stores';
+	import {
+		settings,
+		showSettings,
+		terminalServers,
+		selectedTerminalId,
+		user,
+		selectedFolder
+	} from '$lib/stores';
 	import { getToolServersData } from '$lib/apis';
 
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
@@ -13,8 +20,16 @@
 
 	export let show = false;
 
+	const FORMIC_LOCAL_TERMINAL_ID = 'formic-local-terminal';
+
 	$: systemTerminals = ($terminalServers ?? []).filter((t) => t.id);
 	$: directTerminals = ($settings?.terminalServers ?? []).filter((s) => s.url);
+	$: localProjectTerminal = systemTerminals.find((t) => t.id === FORMIC_LOCAL_TERMINAL_ID);
+	$: autoProjectTerminalActive =
+		!$selectedTerminalId &&
+		Boolean(localProjectTerminal) &&
+		$selectedFolder?.data?.group_type === 'project' &&
+		Boolean($selectedFolder?.data?.project_path);
 
 	const refreshTerminalServersStore = async (servers: typeof directTerminals) => {
 		// Preserve system terminals (those with an `id`) — only refresh direct ones
@@ -82,6 +97,9 @@
 	$: selectedDirectTerminal = directTerminals.find((t) => t.url === $selectedTerminalId);
 
 	$: selectedLabel =
+		(autoProjectTerminalActive
+			? localProjectTerminal?.name || localProjectTerminal?.id
+			: undefined) ||
 		selectedSystemTerminal?.name ||
 		selectedSystemTerminal?.id ||
 		selectedDirectTerminal?.name ||
@@ -94,14 +112,15 @@
 		<Tooltip content={$i18n.t('Terminal')} placement="top">
 			<button
 				type="button"
-				class="flex items-center gap-1.5 translate-y-[1px] hover:bg-gray-50 dark:hover:bg-gray-850 text-sm transition rounded-lg cursor-pointer {$selectedTerminalId &&
+				class="flex items-center gap-1.5 translate-y-[1px] hover:bg-gray-50 dark:hover:bg-gray-850 text-sm transition rounded-lg cursor-pointer {($selectedTerminalId ||
+				autoProjectTerminalActive) &&
 				selectedLabel
 					? ' px-2.5 py-1 '
 					: ' p-2 opacity-50'}"
 			>
 				<Cloud className="size-3.5" strokeWidth="2" />
 
-				{#if $selectedTerminalId && selectedLabel}
+				{#if ($selectedTerminalId || autoProjectTerminalActive) && selectedLabel}
 					<span class="truncate text-[13px] max-w-[100px] sm:max-w-[150px]">{selectedLabel}</span>
 				{/if}
 			</button>
@@ -218,7 +237,8 @@
 						<button
 							type="button"
 							class="flex w-full justify-between gap-2 items-center px-3 py-1.5 text-sm cursor-pointer rounded-xl {$selectedTerminalId ===
-							terminal.id
+								terminal.id ||
+							(autoProjectTerminalActive && terminal.id === FORMIC_LOCAL_TERMINAL_ID)
 								? 'bg-gray-50 dark:bg-gray-800/50'
 								: 'hover:bg-gray-50 dark:hover:bg-gray-800/50'}"
 							on:click={() => selectSystem(terminal)}
@@ -227,7 +247,7 @@
 								<Cloud className="size-4 shrink-0" strokeWidth="2" />
 								<span class="truncate">{terminal.name || $i18n.t('Terminal')}</span>
 							</div>
-							{#if $selectedTerminalId === terminal.id}
+							{#if $selectedTerminalId === terminal.id || (autoProjectTerminalActive && terminal.id === FORMIC_LOCAL_TERMINAL_ID)}
 								<div class="shrink-0 text-emerald-600 dark:text-emerald-400">
 									<svg
 										xmlns="http://www.w3.org/2000/svg"

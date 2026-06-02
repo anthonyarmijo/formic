@@ -126,6 +126,7 @@
 
 	let messageInput: MessageInput | undefined;
 	let messagesRef: Messages | undefined;
+	const FORMIC_LOCAL_TERMINAL_ID = 'formic-local-terminal';
 
 	let autoScroll = true;
 	let isNearTop = true;
@@ -2398,11 +2399,19 @@
 			});
 		}
 
-		// Use the user-selected terminal from the dropdown
-		const activeTerminalId = $selectedTerminalId ?? null;
-
 		// Only send terminal_id if the model has terminal capability enabled
 		const terminalEnabled = model.info?.meta?.capabilities?.terminal ?? true;
+		const localProjectTerminalAvailable = ($terminalServers ?? []).some(
+			(terminal) => terminal.id === FORMIC_LOCAL_TERMINAL_ID
+		);
+		const activeTerminalId =
+			$selectedTerminalId ??
+			(terminalEnabled &&
+			localProjectTerminalAvailable &&
+			$selectedFolder?.data?.group_type === 'project' &&
+			$selectedFolder?.data?.project_path
+				? FORMIC_LOCAL_TERMINAL_ID
+				: null);
 
 		const res = await generateOpenAIChatCompletion(
 			localStorage.token,
