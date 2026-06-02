@@ -93,6 +93,19 @@ def normalize_folder_project_path_data(data: dict | None) -> dict | None:
     }
 
 
+def normalize_project_path_for_context(value: Any) -> str | None:
+    project_path = _clean_optional_string(value)
+    if not project_path:
+        return None
+
+    try:
+        normalized = normalize_project_path(project_path)
+    except ValueError:
+        return None
+
+    return _clean_optional_string(normalized)
+
+
 def build_formic_group_context(
     *,
     folder: Any | None,
@@ -108,11 +121,13 @@ def build_formic_group_context(
     if not group_id:
         return None
 
+    project_path = normalize_project_path_for_context(data.get('project_path'))
+
     return {
         'group_id': group_id,
         'group_name': _clean_optional_string(getattr(folder, 'name', None)),
         'group_type': _clean_optional_string(data.get('group_type')),
-        'project_path': _clean_optional_string(data.get('project_path')),
+        'project_path': project_path,
         'workspace': _clean_optional_string(data.get('workspace')),
         'tags': _clean_tags(data.get('tags')),
         'system_prompt': _clean_optional_string(data.get('system_prompt')),

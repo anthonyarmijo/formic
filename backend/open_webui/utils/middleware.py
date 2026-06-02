@@ -614,6 +614,50 @@ def serialize_output(output: list) -> str:
     return '\n'.join(parts).strip()
 
 
+def resolve_unfinished_function_calls(output: list) -> list:
+    """Close function calls that never received a tool result before final save."""
+    if not isinstance(output, list) or not output:
+        return output
+
+    completed_call_ids = {
+        item.get('call_id')
+        for item in output
+        if item.get('type') == 'function_call_output' and item.get('call_id')
+    }
+    resolved_output = []
+
+    for item in output:
+        resolved_output.append(item)
+
+        if item.get('type') != 'function_call':
+            continue
+
+        call_id = item.get('call_id') or item.get('id')
+        if not call_id or call_id in completed_call_ids:
+            continue
+
+        item['call_id'] = call_id
+        item['status'] = 'completed'
+        completed_call_ids.add(call_id)
+        name = item.get('name') or 'tool'
+        resolved_output.append(
+            {
+                'type': 'function_call_output',
+                'id': output_id('fco'),
+                'call_id': call_id,
+                'output': [
+                    {
+                        'type': 'input_text',
+                        'text': f'Tool call `{name}` did not complete before the response finished.',
+                    }
+                ],
+                'status': 'completed',
+            }
+        )
+
+    return resolved_output
+
+
 def deep_merge(target, source):
     """
     Merge source into target recursively (returning new structure).
@@ -2749,15 +2793,37 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     terminal_capability = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('terminal', True)
     project_terminal_context = get_formic_project_terminal_context(metadata, folder_id or body_folder_id)
+    local_terminal_enabled = has_enabled_terminal_connection(request, FORMIC_LOCAL_TERMINAL_ID)
     terminal_auto_selected = False
     if (
         not terminal_id
         and terminal_capability
         and project_terminal_context
-        and has_enabled_terminal_connection(request, FORMIC_LOCAL_TERMINAL_ID)
+        and local_terminal_enabled
     ):
         terminal_id = FORMIC_LOCAL_TERMINAL_ID
         terminal_auto_selected = True
+    elif isinstance(metadata.get('formic_group_context'), dict) and metadata['formic_group_context'].get(
+        'group_type'
+    ) == 'project':
+        if terminal_id:
+            terminal_skip_reason = 'explicit_terminal_selected'
+        elif not terminal_capability:
+            terminal_skip_reason = 'model_terminal_capability_disabled'
+        elif not project_terminal_context:
+            terminal_skip_reason = 'missing_or_invalid_project_path'
+        elif not local_terminal_enabled:
+            terminal_skip_reason = 'formic_local_terminal_not_enabled'
+        else:
+            terminal_skip_reason = 'unknown'
+
+        log.info(
+            'Project terminal auto-select skipped folder_id=%s model=%s reason=%s project_path=%s',
+            folder_id or body_folder_id,
+            form_data.get('model'),
+            terminal_skip_reason,
+            metadata['formic_group_context'].get('project_path'),
+        )
 
     metadata = {
         **metadata,
@@ -5183,6 +5249,8 @@ async def streaming_chat_response_handler(response, ctx):
                             log.debug(e)
                             break
 
+                output = resolve_unfinished_function_calls(output)
+
                 # Mark all in-progress items as completed
                 for item in output:
                     if item.get('status') == 'in_progress':
@@ -5273,22 +5341,16 @@ async def streaming_chat_response_handler(response, ctx):
                 async def save_cancelled_state():
                     await event_emitter({'type': 'chat:tasks:cancel'})
                     if not metadata['chat_id'].startswith('channel:'):
-                        if not ENABLE_REALTIME_CHAT_SAVE:
-                            await Chats.upsert_message_to_chat_by_id_and_message_id(
-                                metadata['chat_id'],
-                                metadata['message_id'],
-                                {
-                                    'done': True,
-                                    'content': serialize_output(output),
-                                    'output': output,
-                                },
-                            )
-                        else:
-                            await Chats.upsert_message_to_chat_by_id_and_message_id(
-                                metadata['chat_id'],
-                                metadata['message_id'],
-                                {'done': True},
-                            )
+                        cancelled_output = resolve_unfinished_function_calls(output)
+                        await Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata['chat_id'],
+                            metadata['message_id'],
+                            {
+                                'done': True,
+                                'content': serialize_output(cancelled_output),
+                                'output': cancelled_output,
+                            },
+                        )
 
                 try:
                     await asyncio.shield(save_cancelled_state())

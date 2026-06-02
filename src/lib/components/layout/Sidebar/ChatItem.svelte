@@ -134,7 +134,7 @@
 			await chats.set(await getChatList(localStorage.token, $currentChatPage));
 			await pinnedChats.set(await getPinnedChatList(localStorage.token));
 
-			dispatch('change', { deletedChatId: id });
+			dispatch('change');
 		}
 	};
 
@@ -172,6 +172,13 @@
 
 		if (res) {
 			tags.set(await getAllTags(localStorage.token));
+			chats.update((items) =>
+				Array.isArray(items) ? items.filter((chat) => chat.id !== id) : items
+			);
+			pinnedChats.update((items) =>
+				Array.isArray(items) ? items.filter((chat) => chat.id !== id) : items
+			);
+
 			if ($chatId === id) {
 				await goto('/');
 
@@ -179,7 +186,7 @@
 				await tick();
 			}
 
-			dispatch('change');
+			dispatch('change', { deletedChatId: id });
 		}
 
 		deleting = false;

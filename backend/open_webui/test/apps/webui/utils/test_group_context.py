@@ -62,6 +62,35 @@ def test_build_formic_group_context_supports_topic_and_scratch_groups():
     assert build_formic_group_context(folder=scratch, user_id='user-abc', chat_id='chat-2')['group_type'] == 'scratch'
 
 
+def test_build_formic_group_context_normalizes_legacy_home_project_paths(monkeypatch):
+    monkeypatch.setenv('HOME', '/Users/example')
+    folder = SimpleNamespace(
+        id='folder-123',
+        name='Legacy Project',
+        data={'group_type': 'project', 'project_path': '~/dev/formic'},
+    )
+
+    assert build_formic_group_context(
+        folder=folder,
+        user_id='user-abc',
+        chat_id='chat-xyz',
+    )['project_path'] == '/Users/example/dev/formic'
+
+
+def test_build_formic_group_context_omits_unsupported_relative_project_paths():
+    folder = SimpleNamespace(
+        id='folder-123',
+        name='Invalid Project',
+        data={'group_type': 'project', 'project_path': 'dev/formic'},
+    )
+
+    assert build_formic_group_context(
+        folder=folder,
+        user_id='user-abc',
+        chat_id='chat-xyz',
+    )['project_path'] is None
+
+
 def test_build_formic_group_context_returns_none_without_folder():
     assert build_formic_group_context(folder=None, user_id='user-abc', chat_id='chat-xyz') is None
 
