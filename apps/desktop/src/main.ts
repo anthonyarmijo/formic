@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from 'electron';
 import { existsSync, mkdirSync } from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
@@ -692,6 +692,22 @@ ipcMain.handle('formic:server-status', () => ({
   serverLaunchPlan: activeServerLaunchPlan,
   recentServerOutput
 }));
+
+ipcMain.handle('formic:select-project-directory', async () => {
+  const focusedWindow = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+  const options: OpenDialogOptions = {
+    properties: ['openDirectory']
+  };
+  const result = focusedWindow
+    ? await dialog.showOpenDialog(focusedWindow, options)
+    : await dialog.showOpenDialog(options);
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  return result.filePaths[0];
+});
 
 app.whenReady().then(createWindow);
 

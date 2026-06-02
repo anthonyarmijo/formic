@@ -12,19 +12,23 @@ Namespaced under /api/v1/workspaces to avoid collision with the existing
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from open_webui.constants import ERROR_MESSAGES
+from open_webui.internal.db import get_async_session
+from open_webui.models.chats import Chats
 from open_webui.models.folders import (
     FolderForm,
     FolderModel,
-    FolderUpdateForm,
     Folders,
+    FolderUpdateForm,
 )
-from open_webui.models.chats import Chats
-from open_webui.constants import ERROR_MESSAGES
-from open_webui.internal.db import get_async_session
-from open_webui.utils.auth import get_verified_user
 from open_webui.utils.access_control import has_permission
+from open_webui.utils.access_control.files import get_accessible_folder_files
+from open_webui.utils.auth import get_verified_user
+from open_webui.utils.group_context import (
+    build_formic_context_bundle,
+    normalize_folder_project_path_data,
+)
+from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +43,23 @@ router = APIRouter()
 #   data.tags         : list[str]     user-defined tags for filtering
 #   data.workspace    : str | None    top-level area ("personal", "work", …)
 # ────────────────────────────────────────────────────────────────────────
+
+
+def normalize_workspace_form_project_path(
+    form_data: FolderForm | FolderUpdateForm,
+) -> FolderForm | FolderUpdateForm:
+    if not form_data.data:
+        return form_data
+
+    try:
+        data = normalize_folder_project_path_data(form_data.data)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(str(e)),
+        ) from e
+
+    return form_data.model_copy(update={"data": data})
 
 
 ############################
@@ -118,6 +139,7 @@ async def create_workspace(
     db: AsyncSession = Depends(get_async_session),
 ):
     """Create a new workspace (folder)."""
+    form_data = normalize_workspace_form_project_path(form_data)
     folder = await Folders.get_folder_by_parent_id_and_user_id_and_name(
         form_data.parent_id, user.id, form_data.name, db=db
     )
@@ -140,6 +162,55 @@ async def create_workspace(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.DEFAULT("Error creating workspace"),
         )
+
+
+############################
+# Get Workspace Context
+############################
+
+@router.get("/{id}/context")
+async def get_workspace_context(
+    request: Request,
+    id: str,
+    chat_id: str | None = None,
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Return computed Formic context metadata without writing it to a chat."""
+    if request.app.state.config.ENABLE_FOLDERS is False:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    if user.role != "admin" and not await has_permission(
+        user.id,
+        "features.folders",
+        request.app.state.config.USER_PERMISSIONS,
+        db=db,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    folder = await Folders.get_folder_by_id_and_user_id(id, user.id, db=db)
+    if not folder:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    data = folder.data if isinstance(folder.data, dict) else {}
+    folder_files = data.get("files") if isinstance(data.get("files"), list) else []
+    file_refs = await get_accessible_folder_files(folder_files, user, db=db)
+
+    return build_formic_context_bundle(
+        folder=folder,
+        user_id=user.id,
+        chat_id=chat_id,
+        file_refs=file_refs,
+    )
 
 
 ############################
@@ -172,6 +243,7 @@ async def update_workspace(
     db: AsyncSession = Depends(get_async_session),
 ):
     """Update a workspace name and/or metadata."""
+    form_data = normalize_workspace_form_project_path(form_data)
     folder = await Folders.get_folder_by_id_and_user_id(id, user.id, db=db)
     if not folder:
         raise HTTPException(

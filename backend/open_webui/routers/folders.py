@@ -22,6 +22,7 @@ from open_webui.models.folders import (
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.access_control.files import get_accessible_folder_files
 from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.group_context import normalize_folder_project_path_data
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +41,21 @@ def sanitize_folder_list_data(data: Optional[dict]) -> Optional[dict]:
 
     sanitized = {key: data[key] for key in FOLDER_LIST_DATA_KEYS if key in data}
     return sanitized or None
+
+
+def normalize_folder_form_project_path(form_data: FolderForm | FolderUpdateForm) -> FolderForm | FolderUpdateForm:
+    if not form_data.data:
+        return form_data
+
+    try:
+        data = normalize_folder_project_path_data(form_data.data)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(str(e)),
+        ) from e
+
+    return form_data.model_copy(update={'data': data})
 
 
 ############################
@@ -153,6 +169,7 @@ async def create_folder(
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    form_data = normalize_folder_form_project_path(form_data)
     folder = await Folders.get_folder_by_parent_id_and_user_id_and_name(
         form_data.parent_id, user.id, form_data.name, db=db
     )
@@ -204,6 +221,7 @@ async def update_folder_name_by_id(
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    form_data = normalize_folder_form_project_path(form_data)
     folder = await Folders.get_folder_by_id_and_user_id(id, user.id, db=db)
     if folder:
         if form_data.name is not None:

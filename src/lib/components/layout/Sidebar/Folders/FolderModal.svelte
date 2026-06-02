@@ -3,6 +3,7 @@
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
+	import FolderIcon from '$lib/components/icons/Folder.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
 
 	import { toast } from 'svelte-sonner';
@@ -106,24 +107,37 @@
 		}
 	};
 
+	const selectProjectDirectory = async () => {
+		const picker = window.formicDesktop?.selectProjectDirectory;
+		if (!picker) {
+			toast.error($i18n.t('Folder browsing is only available in the desktop app.'));
+			return;
+		}
+
+		const selectedPath = await picker();
+		if (selectedPath) {
+			data.project_path = selectedPath;
+		}
+	};
+
 	$: if (show) {
 		init();
 	}
 
-		$: if (!show && !edit) {
-			name = '';
-			meta = {
-				background_image_url: null
-			};
-			data = {
-				system_prompt: '',
-				files: [],
-				group_type: 'topic',
-				project_path: '',
-				tags: [],
-				workspace: defaultWorkspace
-			};
-		}
+	$: if (!show && !edit) {
+		name = '';
+		meta = {
+			background_image_url: null
+		};
+		data = {
+			system_prompt: '',
+			files: [],
+			group_type: 'topic',
+			project_path: '',
+			tags: [],
+			workspace: defaultWorkspace
+		};
+	}
 </script>
 
 <Modal size="md" bind:show>
@@ -246,65 +260,90 @@
 						</div>
 					{/if}
 
-				<hr class=" border-gray-50 dark:border-gray-850/30 my-2.5 w-full" />
+					<hr class=" border-gray-50 dark:border-gray-850/30 my-2.5 w-full" />
 
-				<div class="my-1">
-					<div class="mb-2 text-xs text-gray-500">{$i18n.t('Group Type')}</div>
-					<select
-						class="w-full text-sm bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 outline-hidden"
-						bind:value={data.group_type}
-					>
-						<option value="topic">{$i18n.t('Topic')} - {$i18n.t('chat organizer, no directory')}</option>
-						<option value="project">{$i18n.t('Project')} - {$i18n.t('local directory + terminal')}</option>
-						<option value="scratch">{$i18n.t('Scratch')} - {$i18n.t('temporary, auto-cleanup')}</option>
-					</select>
-				</div>
-
-				{#if data.group_type === 'project'}
 					<div class="my-1">
-						<div class="mb-2 text-xs text-gray-500">{$i18n.t('Project Directory')}</div>
+						<div class="mb-2 text-xs text-gray-500">{$i18n.t('Group Type')}</div>
+						<select
+							class="w-full text-sm bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 outline-hidden"
+							bind:value={data.group_type}
+						>
+							<option value="topic"
+								>{$i18n.t('Topic')} - {$i18n.t('chat organizer, no directory')}</option
+							>
+							<option value="project"
+								>{$i18n.t('Project')} - {$i18n.t('local directory + terminal')}</option
+							>
+							<option value="scratch"
+								>{$i18n.t('Scratch')} - {$i18n.t('temporary, auto-cleanup')}</option
+							>
+						</select>
+					</div>
+
+					{#if data.group_type === 'project'}
+						<div class="my-1">
+							<div class="mb-2 text-xs text-gray-500">{$i18n.t('Project Directory')}</div>
+							<div class="flex gap-2">
+								<input
+									class="min-w-0 flex-1 text-sm bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700"
+									type="text"
+									bind:value={data.project_path}
+									placeholder="~/dev/apps/personal/pinpoint"
+									autocomplete="off"
+								/>
+								<button
+									class="shrink-0 rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-850"
+									type="button"
+									aria-label={$i18n.t('Browse for project directory')}
+									title={$i18n.t('Browse for project directory')}
+									on:click={selectProjectDirectory}
+								>
+									<div class="flex items-center gap-1.5">
+										<FolderIcon className="size-4" />
+										<span>{$i18n.t('Browse')}</span>
+									</div>
+								</button>
+							</div>
+							<div class="mt-1 text-xs text-gray-400">
+								{$i18n.t(
+									'Use an absolute path or ~/... . Project file access requires OpenTerminal, Hermes tools, or another terminal/file provider.'
+								)}
+							</div>
+						</div>
+					{/if}
+
+					<div class="my-1">
+						<div class="mb-2 text-xs text-gray-500">{$i18n.t('Tags')}</div>
 						<input
 							class="w-full text-sm bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700"
 							type="text"
-							bind:value={data.project_path}
-							placeholder="~/dev/apps/personal/pinpoint"
+							value={data.tags.join(', ')}
+							on:input={(e) => {
+								const target = e.target as HTMLInputElement;
+								if (target) {
+									data.tags = target.value
+										.split(',')
+										.map((t) => t.trim())
+										.filter(Boolean);
+								}
+							}}
+							placeholder="python, fastapi, cli"
 							autocomplete="off"
 						/>
-						<div class="mt-1 text-xs text-gray-400">
-							{$i18n.t('Absolute path to the project directory. Enables terminal and IDE integration.')}
-						</div>
 					</div>
-				{/if}
 
-				<div class="my-1">
-					<div class="mb-2 text-xs text-gray-500">{$i18n.t('Tags')}</div>
-					<input
-						class="w-full text-sm bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700"
-						type="text"
-						value={data.tags.join(', ')}
-						on:input={(e) => {
-							const target = e.target as HTMLInputElement;
-							if (target) {
-								data.tags = target.value.split(',').map((t) => t.trim()).filter(Boolean);
-							}
-						}}
-						placeholder="python, fastapi, cli"
-						autocomplete="off"
-					/>
-				</div>
+					<div class="my-1">
+						<div class="mb-2 text-xs text-gray-500">{$i18n.t('Workspace')}</div>
+						<input
+							class="w-full text-sm bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700"
+							type="text"
+							bind:value={data.workspace}
+							placeholder="personal"
+							autocomplete="off"
+						/>
+					</div>
 
-				<div class="my-1">
-					<div class="mb-2 text-xs text-gray-500">{$i18n.t('Workspace')}</div>
-					<input
-						class="w-full text-sm bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700"
-						type="text"
-						bind:value={data.workspace}
-						placeholder="personal"
-						autocomplete="off"
-					/>
-				</div>
-
-				<div class="my-2">
+					<div class="my-2">
 						<Knowledge bind:selectedItems={data.files}>
 							<div slot="label">
 								<div class="flex w-full justify-between">

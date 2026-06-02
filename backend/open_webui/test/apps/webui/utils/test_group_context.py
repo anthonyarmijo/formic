@@ -1,12 +1,16 @@
 from types import SimpleNamespace
 
+import pytest
 from open_webui.utils.group_context import (
     apply_formic_hermes_conversation,
+    build_formic_context_bundle,
     build_formic_group_context,
     build_formic_hermes_context,
     build_formic_memory_context,
     build_hindsight_bank_id,
     get_formic_hermes_conversation,
+    normalize_folder_project_path_data,
+    normalize_project_path,
 )
 
 
@@ -55,14 +59,83 @@ def test_build_formic_group_context_supports_topic_and_scratch_groups():
     scratch = SimpleNamespace(id='scratch-1', name='Scratch', data={'group_type': 'scratch'})
 
     assert build_formic_group_context(folder=topic, user_id='user-abc', chat_id='chat-1')['group_type'] == 'topic'
-    assert (
-        build_formic_group_context(folder=scratch, user_id='user-abc', chat_id='chat-2')['group_type']
-        == 'scratch'
-    )
+    assert build_formic_group_context(folder=scratch, user_id='user-abc', chat_id='chat-2')['group_type'] == 'scratch'
 
 
 def test_build_formic_group_context_returns_none_without_folder():
     assert build_formic_group_context(folder=None, user_id='user-abc', chat_id='chat-xyz') is None
+
+
+def test_build_formic_context_bundle_matches_chat_metadata_shape():
+    folder = SimpleNamespace(
+        id='folder-123',
+        name='Formic Desktop',
+        data={'group_type': 'project', 'project_path': '/Users/example/dev/formic'},
+    )
+
+    assert build_formic_context_bundle(
+        folder=folder,
+        user_id='user-abc',
+        chat_id='chat-xyz',
+        file_refs=[],
+    ) == {
+        'formic_group_context': {
+            'group_id': 'folder-123',
+            'group_name': 'Formic Desktop',
+            'group_type': 'project',
+            'project_path': '/Users/example/dev/formic',
+            'workspace': None,
+            'tags': [],
+            'system_prompt': None,
+            'file_refs': [],
+            'chat_id': 'chat-xyz',
+            'user_id': 'user-abc',
+        },
+        'formic_memory_context': {
+            'default_provider': 'hindsight',
+            'providers': {
+                'hindsight': {
+                    'bank_id': 'formic:user:user-abc:group:folder-123',
+                    'scope': 'group',
+                    'group_id': 'folder-123',
+                    'user_id': 'user-abc',
+                }
+            },
+        },
+        'formic_hermes': {
+            'conversation': 'formic-group:folder-123',
+            'group_id': 'folder-123',
+        },
+    }
+
+
+def test_normalize_project_path_expands_home_and_preserves_absolute_paths():
+    assert normalize_project_path('~/dev/formic', home_dir='/Users/example') == '/Users/example/dev/formic'
+    assert normalize_project_path('/Users/example/dev/../dev/formic') == '/Users/example/dev/formic'
+    assert normalize_project_path('') == ''
+    assert normalize_project_path(None) is None
+
+
+def test_normalize_project_path_rejects_arbitrary_relative_paths():
+    with pytest.raises(ValueError, match='absolute path'):
+        normalize_project_path('dev/formic')
+
+    with pytest.raises(ValueError, match='absolute path'):
+        normalize_project_path('~other/dev/formic')
+
+
+def test_normalize_folder_project_path_data_stores_normalized_absolute_path():
+    assert normalize_folder_project_path_data(
+        {
+            'group_type': 'project',
+            'project_path': '~/dev/formic',
+            'workspace': 'personal',
+        }
+    ) == {
+        'group_type': 'project',
+        'project_path': f'{normalize_project_path("~")}/dev/formic',
+        'workspace': 'personal',
+    }
 
 
 def test_hindsight_bank_id_is_group_and_user_scoped():

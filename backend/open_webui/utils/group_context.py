@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 HINDSIGHT_PROVIDER_ID = 'hindsight'
 HERMES_AGENT_MODEL_ID = 'hermes-agent'
+PROJECT_PATH_ERROR_MESSAGE = 'Project directory must be an absolute path or start with ~/.'
 
 
 def _clean_optional_string(value: Any) -> str | None:
@@ -59,6 +61,36 @@ def build_formic_group_conversation_id(group_id: str | None) -> str | None:
         return None
 
     return f'formic-group:{group_id}'
+
+
+def normalize_project_path(value: Any, *, home_dir: str | None = None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(PROJECT_PATH_ERROR_MESSAGE)
+
+    value = value.strip()
+    if not value:
+        return ''
+
+    if value == '~' or value.startswith('~/'):
+        home = home_dir or os.path.expanduser('~')
+        value = os.path.join(home, value[2:]) if value.startswith('~/') else home
+
+    if not os.path.isabs(value):
+        raise ValueError(PROJECT_PATH_ERROR_MESSAGE)
+
+    return os.path.abspath(os.path.normpath(value))
+
+
+def normalize_folder_project_path_data(data: dict | None) -> dict | None:
+    if not data or 'project_path' not in data:
+        return data
+
+    return {
+        **data,
+        'project_path': normalize_project_path(data.get('project_path')),
+    }
 
 
 def build_formic_group_context(
@@ -122,6 +154,27 @@ def build_formic_hermes_context(group_context: dict[str, Any] | None) -> dict[st
     return {
         'conversation': conversation,
         'group_id': group_context.get('group_id'),
+    }
+
+
+def build_formic_context_bundle(
+    *,
+    folder: Any | None,
+    user_id: str | None,
+    chat_id: str | None,
+    file_refs: Any = None,
+) -> dict[str, Any]:
+    group_context = build_formic_group_context(
+        folder=folder,
+        user_id=user_id,
+        chat_id=chat_id,
+        file_refs=file_refs,
+    )
+
+    return {
+        'formic_group_context': group_context,
+        'formic_memory_context': build_formic_memory_context(group_context),
+        'formic_hermes': build_formic_hermes_context(group_context),
     }
 
 
