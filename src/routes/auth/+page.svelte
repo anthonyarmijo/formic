@@ -42,12 +42,25 @@
 
 	let ldapUsername = '';
 
+	const setDesktopSessionToken = async (token: string | null | undefined) => {
+		if (!token) {
+			return;
+		}
+
+		try {
+			await window.formicDesktop?.setSessionToken?.(token);
+		} catch (error) {
+			console.warn('Unable to store desktop session token:', error);
+		}
+	};
+
 	const setSessionUser = async (sessionUser, redirectPath: string | null = null) => {
 		if (sessionUser) {
 			console.log(sessionUser);
 			toast.success($i18n.t(`You're now logged in.`));
 			if (sessionUser.token) {
 				localStorage.token = sessionUser.token;
+				await setDesktopSessionToken(sessionUser.token);
 			}
 			$socket.emit('user-join', { auth: { token: sessionUser.token } });
 			await user.set(sessionUser);
@@ -137,6 +150,7 @@
 		}
 
 		localStorage.token = token;
+		await setDesktopSessionToken(token);
 		await setSessionUser(sessionUser, localStorage.getItem('redirectPath') || null);
 	};
 

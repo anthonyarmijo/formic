@@ -112,6 +112,48 @@
 
 	const BREAKPOINT = 768;
 
+	const getDesktopSessionToken = async () => {
+		try {
+			return (await window.formicDesktop?.getSessionToken?.()) || null;
+		} catch (error) {
+			console.warn('Unable to read desktop session token:', error);
+			return null;
+		}
+	};
+
+	const setDesktopSessionToken = async (token) => {
+		if (!token) {
+			return;
+		}
+
+		try {
+			await window.formicDesktop?.setSessionToken?.(token);
+		} catch (error) {
+			console.warn('Unable to store desktop session token:', error);
+		}
+	};
+
+	const clearSessionToken = async () => {
+		localStorage.removeItem('token');
+
+		try {
+			await window.formicDesktop?.clearSessionToken?.();
+		} catch (error) {
+			console.warn('Unable to clear desktop session token:', error);
+		}
+	};
+
+	const restoreDesktopSessionToken = async () => {
+		if (localStorage.token) {
+			return;
+		}
+
+		const token = await getDesktopSessionToken();
+		if (token) {
+			localStorage.token = token;
+		}
+	};
+
 	const setupSocket = async (enableWebsocket) => {
 		const _socket = io(`${WEBUI_BASE_URL}` || undefined, {
 			reconnection: true,
@@ -748,7 +790,7 @@
 		if (now >= exp - TOKEN_EXPIRY_BUFFER) {
 			const res = await userSignOut();
 			user.set(null);
-			localStorage.removeItem('token');
+			await clearSessionToken();
 
 			location.href = res?.redirect_url ?? '/auth';
 		}
@@ -899,6 +941,8 @@
 				window.applyTheme();
 			}
 		}
+
+		await restoreDesktopSessionToken();
 
 		if (window?.electronAPI) {
 			const info = await window.electronAPI.send({
@@ -1058,9 +1102,10 @@
 								})
 								.catch(() => {});
 						}
+						await setDesktopSessionToken(localStorage.token);
 					} else {
 						// Redirect Invalid Session User to /auth Page
-						localStorage.removeItem('token');
+						await clearSessionToken();
 						await goto(`/auth?redirect=${encodedUrl}`);
 					}
 				} else {

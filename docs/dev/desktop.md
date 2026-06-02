@@ -2,7 +2,9 @@
 
 `npm run dev:desktop:all` is the canonical local desktop loop for Phase 0.
 
-It starts the Vite/Svelte renderer on `http://127.0.0.1:5173` with a strict port, opens Electron immediately, and lets Electron own the FastAPI backend lifecycle. Electron first checks for an existing backend at `FORMIC_SERVER_URL` or `http://127.0.0.1:8080`; if none is ready and `FORMIC_SERVER_MODE` is `auto`, it starts the local FastAPI sidecar with `uv run --frozen --project . python -m uvicorn`.
+It starts the Vite/Svelte renderer on `http://127.0.0.1:5173` with a strict port, opens Electron immediately, and lets Electron own the FastAPI backend lifecycle. In unpackaged dev, Electron defaults to `FORMIC_SERVER_MODE=spawn` so it starts its own local FastAPI sidecar with `uv run --frozen --project . python -m uvicorn` instead of silently attaching to any healthy process on `8080`.
+
+If a mounted or copied DMG app is still running on `8080`, quit that app before starting the dev loop or pick another `FORMIC_SERVER_PORT`. Use `FORMIC_SERVER_MODE=external` only when you intentionally want dev Electron to attach to a user-managed backend. Explicit `FORMIC_SERVER_MODE=auto` in dev refuses an already-running backend unless `FORMIC_ALLOW_DEV_EXISTING_BACKEND=1` is set for temporary debugging.
 
 Local dev routes generated backend static files to an untracked temp/user-data directory so starting the backend does not rewrite tracked assets under `backend/open_webui/static`.
 
@@ -13,12 +15,27 @@ Useful environment overrides:
 - `FORMIC_SERVER_MODE=auto|spawn|external`
 - `FORMIC_SERVER_URL=http://127.0.0.1:8080`
 - `FORMIC_SERVER_PORT=8080`
+- `FORMIC_ALLOW_DEV_EXISTING_BACKEND=1`
 - `FORMIC_RENDERER_URL=http://127.0.0.1:5173`
 - `FORMIC_SERVER_READY_TIMEOUT_MS=120000`
 - `FORMIC_RENDERER_READY_TIMEOUT_MS=120000`
 - `FORMIC_SERVER_BUNDLE_DIR=/path/to/server-root`
 - `FORMIC_SERVER_LOG_LINES=24`
 - `FORMIC_PYTHON=/path/to/python`
+
+## Desktop Login and Terminal Tools
+
+The desktop shell persists the signed-in session token in Electron user data so reopening the app can reuse the normal authenticated session without storing the password. `safeStorage` encryption is used when the OS provides it; otherwise the token falls back to a local JSON file under the desktop user-data directory. Signing out or failing session validation clears both `localStorage.token` and the desktop copy.
+
+Project directories are context for the selected Group. They do not grant hosted models direct filesystem access by themselves. File/folder interaction requires an enabled terminal or file-capable tool provider, such as a system OpenTerminal connection, selected for the chat.
+
+For DeepSeek or any other model that should have terminal access, diagnose the tool path in this order:
+
+- confirm a system terminal connection exists under `/api/v1/configs/terminal_servers`
+- confirm `/api/v1/configs/terminal_servers/diagnostics` reports `spec_loaded: true`, `user_has_access: true`, and a non-zero `tool_count`
+- confirm `/api/v1/terminals/` lists the terminal for the current user
+- select that terminal in the chat and confirm the request includes `terminal_id`
+- inspect request metadata/logs for `terminal_diagnostics.tools_injected: true`
 
 ## Bundled Server Rehearsal
 

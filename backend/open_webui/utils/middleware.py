@@ -2239,7 +2239,6 @@ def strip_skill_mentions(messages: list[dict]) -> None:
                         part['text'] = strip_re.sub('', text).strip()
 
 
-
 async def connect_mcp_server(
     request,
     server_id: str,
@@ -2253,10 +2252,7 @@ async def connect_mcp_server(
     """
     mcp_server_connection = None
     for server_connection in request.app.state.config.TOOL_SERVER_CONNECTIONS:
-        if (
-            server_connection.get('type', '') == 'mcp'
-            and server_connection.get('info', {}).get('id') == server_id
-        ):
+        if server_connection.get('type', '') == 'mcp' and server_connection.get('info', {}).get('id') == server_id:
             mcp_server_connection = server_connection
             break
 
@@ -2269,8 +2265,12 @@ async def connect_mcp_server(
         return None
 
     headers, _ = await build_tool_server_headers(
-        mcp_server_connection, request, user,
-        server_id=server_id, metadata=metadata, extra_params=extra_params,
+        mcp_server_connection,
+        request,
+        user,
+        server_id=server_id,
+        metadata=metadata,
+        extra_params=extra_params,
     )
 
     client = MCPClient()
@@ -2279,18 +2279,13 @@ async def connect_mcp_server(
         headers=headers if headers else None,
     )
 
-    function_name_filter_list = mcp_server_connection.get('config', {}).get(
-        'function_name_filter_list', ''
-    )
+    function_name_filter_list = mcp_server_connection.get('config', {}).get('function_name_filter_list', '')
     if isinstance(function_name_filter_list, str):
         function_name_filter_list = function_name_filter_list.split(',')
 
     tool_specs = await client.list_tool_specs()
     if function_name_filter_list:
-        tool_specs = [
-            spec for spec in tool_specs
-            if is_string_allowed(spec['name'], function_name_filter_list)
-        ]
+        tool_specs = [spec for spec in tool_specs if is_string_allowed(spec['name'], function_name_filter_list)]
 
     return client, tool_specs
 
@@ -2712,10 +2707,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             for tool_id in tool_ids:
                 if tool_id.startswith('server:mcp:'):
                     try:
-                        server_id = tool_id[len('server:mcp:'):]
+                        server_id = tool_id[len('server:mcp:') :]
 
                         result = await connect_mcp_server(
-                            request, server_id, user, metadata, extra_params,
+                            request,
+                            server_id,
+                            user,
+                            metadata,
+                            extra_params,
                         )
                         if result is None:
                             continue
@@ -2724,6 +2723,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         mcp_clients[server_id] = client
 
                         for tool_spec in tool_specs:
+
                             async def make_tool_function(client, function_name):
                                 async def tool_function(**kwargs):
                                     return await client.call_tool(
@@ -2774,6 +2774,18 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         # Resolve terminal tools if terminal_id is set (outside tool_ids check
         # so system terminals work even when no other tools are selected)
         terminal_capability = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('terminal', True)
+        terminal_diagnostics = None
+        if terminal_id:
+            terminal_diagnostics = {
+                'terminal_id': terminal_id,
+                'model_terminal_capability': bool(terminal_capability),
+                'tool_count': 0,
+                'tools_injected': False,
+                'system_prompt_injected': False,
+                'status': 'pending',
+            }
+            metadata['terminal_diagnostics'] = terminal_diagnostics
+
         if terminal_id and terminal_capability:
             try:
                 terminal_result = await get_terminal_tools(
@@ -2787,6 +2799,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 else:
                     terminal_tools = terminal_result
                     system_prompt = None
+                if terminal_diagnostics is not None:
+                    terminal_diagnostics['tool_count'] = len(terminal_tools or {})
+                    terminal_diagnostics['tools_injected'] = bool(terminal_tools)
+                    terminal_diagnostics['system_prompt_injected'] = bool(system_prompt)
+                    terminal_diagnostics['status'] = 'ready' if terminal_tools else 'no_terminal_tools'
                 if terminal_tools:
                     tools_dict = {**tools_dict, **terminal_tools}
                 if system_prompt:
@@ -2795,8 +2812,27 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         form_data['messages'],
                         append=True,
                     )
+                log.info(
+                    'Terminal tool resolution terminal_id=%s model=%s tools=%s system_prompt=%s',
+                    terminal_id,
+                    form_data.get('model'),
+                    len(terminal_tools or {}),
+                    bool(system_prompt),
+                )
             except Exception as e:
+                if terminal_diagnostics is not None:
+                    terminal_diagnostics['status'] = 'error'
+                    terminal_diagnostics['error'] = str(e)
                 log.exception(e)
+        elif terminal_id:
+            if terminal_diagnostics is not None:
+                terminal_diagnostics['status'] = 'model_terminal_capability_disabled'
+            log.info(
+                'Terminal tools skipped terminal_id=%s model=%s capability=%s',
+                terminal_id,
+                form_data.get('model'),
+                terminal_capability,
+            )
 
         if direct_tool_servers:
             for tool_server in direct_tool_servers:

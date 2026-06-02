@@ -9,7 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from mcp.shared.auth import OAuthMetadata
 from open_webui.config import BannerModel, async_save_config, get_config, save_config
 from open_webui.env import AIOHTTP_CLIENT_SESSION_SSL, AIOHTTP_CLIENT_TIMEOUT
+from open_webui.models.groups import Groups
 from open_webui.models.oauth_sessions import OAuthSessions
+from open_webui.utils.access_control import has_connection_access
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import get_custom_headers
 from open_webui.utils.mcp.client import MCPClient
@@ -268,6 +270,74 @@ async def set_terminal_servers_config(
 
     return {
         'TERMINAL_SERVER_CONNECTIONS': request.app.state.config.TERMINAL_SERVER_CONNECTIONS,
+    }
+
+
+@router.get('/terminal_servers/diagnostics')
+async def get_terminal_servers_diagnostics(request: Request, user=Depends(get_verified_user)):
+    connections = request.app.state.config.TERMINAL_SERVER_CONNECTIONS or []
+    user_group_ids = {group.id for group in await Groups.get_groups_by_member_id(user.id)}
+
+    load_error = None
+    terminal_servers = []
+    try:
+        terminal_servers = await set_terminal_servers(request)
+    except Exception as e:
+        load_error = str(e)
+        log.debug(f'Failed to load terminal server diagnostics: {e}')
+
+    loaded_by_id = {server.get('id'): server for server in terminal_servers if server.get('id')}
+    servers = []
+    warnings = []
+
+    if not connections:
+        warnings.append('No system terminal server connections are configured.')
+
+    if load_error:
+        warnings.append('Terminal OpenAPI specs could not be loaded.')
+
+    for connection in connections:
+        connection_id = connection.get('id', '')
+        enabled = connection.get('enabled', True)
+        loaded = loaded_by_id.get(connection_id)
+        spec_loaded = bool(loaded and loaded.get('openapi'))
+        tool_count = len((loaded or {}).get('specs') or [])
+        user_has_access = await has_connection_access(user, connection, user_group_ids)
+
+        if not enabled:
+            warnings.append(f'Terminal connection {connection_id or connection.get("name", "")} is disabled.')
+        elif not spec_loaded:
+            warnings.append(
+                f'Terminal connection {connection_id or connection.get("name", "")} has no loaded OpenAPI spec.'
+            )
+        elif not user_has_access:
+            warnings.append(f'Current user does not have access to terminal connection {connection_id}.')
+
+        servers.append(
+            {
+                'id': connection_id,
+                'name': connection.get('name', ''),
+                'url': connection.get('url', ''),
+                'path': connection.get('path', '/openapi.json'),
+                'enabled': enabled,
+                'auth_type': connection.get('auth_type', 'bearer'),
+                'has_key': bool(connection.get('key')),
+                'server_type': connection.get('server_type'),
+                'policy_id': connection.get('policy_id', ''),
+                'user_has_access': user_has_access,
+                'spec_loaded': spec_loaded,
+                'tool_count': tool_count,
+                'has_system_prompt': bool((loaded or {}).get('system_prompt')),
+            }
+        )
+
+    return {
+        'configured': bool(connections),
+        'connection_count': len(connections),
+        'enabled_count': len([connection for connection in connections if connection.get('enabled', True)]),
+        'loaded_count': len(terminal_servers),
+        'servers': servers,
+        'warnings': warnings,
     }
 
 
