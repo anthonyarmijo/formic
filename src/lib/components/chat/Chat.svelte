@@ -48,7 +48,8 @@
 		showFileNavPath,
 		showFileNavDir,
 		chatRequestQueues,
-		desktopEvent
+		desktopEvent,
+		chatDeleteSignal
 	} from '$lib/stores';
 
 	import { terminalOpen, terminalProjectPath } from '$lib/stores/terminal';
@@ -2915,6 +2916,7 @@
 		try {
 			const res = await deleteChatById(localStorage.token, id);
 			if (res) {
+				chatDeleteSignal.set({ id, at: Date.now() });
 				currentChatPage.set(1);
 				initNewChat();
 				await goto('/');

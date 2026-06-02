@@ -35,7 +35,8 @@
 		currentChatPage,
 		tags,
 		selectedFolder,
-		activeChatIds
+		activeChatIds,
+		chatDeleteSignal
 	} from '$lib/stores';
 
 	import ChatMenu from './ChatMenu.svelte';
@@ -178,6 +179,7 @@
 			pinnedChats.update((items) =>
 				Array.isArray(items) ? items.filter((chat) => chat.id !== id) : items
 			);
+			chatDeleteSignal.set({ id, at: Date.now() });
 
 			if ($chatId === id) {
 				await goto('/');

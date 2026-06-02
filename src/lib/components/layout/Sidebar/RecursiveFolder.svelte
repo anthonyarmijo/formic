@@ -11,7 +11,7 @@
 	import { goto } from '$app/navigation';
 	import { toast } from 'svelte-sonner';
 
-	import { chatId, mobile, selectedFolder, showSidebar } from '$lib/stores';
+	import { chatDeleteSignal, chatId, mobile, selectedFolder, showSidebar } from '$lib/stores';
 
 	import {
 		deleteFolderById,
@@ -371,6 +371,7 @@
 	};
 
 	let chats = null;
+	let handledChatDeleteSignalAt = 0;
 	export const setFolderItems = async () => {
 		await tick();
 		if (open) {
@@ -385,6 +386,15 @@
 
 	$: if (open) {
 		setFolderItems();
+	}
+
+	$: if (
+		$chatDeleteSignal?.id &&
+		$chatDeleteSignal.at !== handledChatDeleteSignalAt &&
+		Array.isArray(chats)
+	) {
+		handledChatDeleteSignalAt = $chatDeleteSignal.at;
+		chats = chats.filter((chat) => chat.id !== $chatDeleteSignal.id);
 	}
 
 	const renameHandler = async () => {

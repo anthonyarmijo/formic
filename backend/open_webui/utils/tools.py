@@ -797,6 +797,107 @@ def get_tool_specs(tool_module: object) -> list[dict]:
 # Valid HTTP methods per OpenAPI 3.x – used to skip extension keys (x-*)
 # and non-operation path-item fields (summary, description, servers, parameters).
 OPENAPI_HTTP_METHODS = {'get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'}
+FORMIC_TERMINAL_RUN_COMMAND_DEFAULT_WAIT = 30
+FORMIC_TERMINAL_RUN_COMMAND_DEFAULT_TAIL = 200
+
+
+def apply_terminal_tool_defaults(name: str, params: dict[str, Any] | None) -> dict[str, Any]:
+    params = dict(params or {})
+    if name == 'run_command':
+        if 'wait' not in params:
+            params['wait'] = FORMIC_TERMINAL_RUN_COMMAND_DEFAULT_WAIT
+        if 'tail' not in params:
+            params['tail'] = FORMIC_TERMINAL_RUN_COMMAND_DEFAULT_TAIL
+    return params
+
+
+def _format_terminal_output_entries(entries: Any) -> str:
+    if not isinstance(entries, list):
+        return ''
+
+    lines = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            data = entry.get('data') or entry.get('text') or entry.get('content') or ''
+            entry_type = entry.get('type')
+            if data:
+                if entry_type and entry_type not in ('output', 'stdout'):
+                    lines.append(f'[{entry_type}] {data}')
+                else:
+                    lines.append(str(data))
+        elif entry is not None:
+            lines.append(str(entry))
+
+    return ''.join(lines)
+
+
+def format_terminal_run_command_result(result: Any) -> str:
+    if not isinstance(result, dict):
+        return str(result)
+
+    command = result.get('command')
+    cwd = result.get('cwd')
+    process_id = result.get('id') or result.get('process_id')
+    status = result.get('status')
+    exit_code = result.get('exit_code')
+    output = _format_terminal_output_entries(result.get('output'))
+
+    lines = ['Terminal command result']
+    if command:
+        lines.append(f'command: {command}')
+    if cwd:
+        lines.append(f'cwd: {cwd}')
+    if process_id:
+        lines.append(f'process_id: {process_id}')
+    if status is not None:
+        lines.append(f'status: {status}')
+    if exit_code is not None:
+        lines.append(f'exit_code: {exit_code}')
+
+    if output.strip():
+        lines.append('output:')
+        lines.append(output.rstrip())
+    elif status == 'running' or exit_code is None:
+        lines.append(
+            'output: Command is still running. Use get_process_status with the process_id to fetch completion output.'
+        )
+
+    if status == 'running' or exit_code is None:
+        lines.append('incomplete: true')
+
+    lines.append('raw_json:')
+    lines.append(json.dumps(result, indent=2, ensure_ascii=False))
+    return '\n'.join(lines)
+
+
+def split_openapi_tool_params(
+    params: dict[str, Any],
+    merged_params: dict[tuple[str, str], dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    path_params = {}
+    query_params = {}
+    external_param_names = set()
+
+    for param in merged_params.values():
+        param_name = param.get('name')
+        if not param_name:
+            continue
+        param_in = param.get('in')
+        if param_name in params:
+            if param_in == 'path':
+                external_param_names.add(param_name)
+                path_params[param_name] = params[param_name]
+            if param_in == 'query':
+                external_param_names.add(param_name)
+                value = params[param_name]
+                # Skip empty values for optional params (LLMs sometimes
+                # pass "" instead of omitting optional parameters).
+                if value is None or (value == '' and not param.get('required')):
+                    continue
+                query_params[param_name] = value
+
+    body_params = {key: value for key, value in params.items() if key not in external_param_names}
+    return path_params, query_params, body_params
 
 
 def resolve_schema(schema, components, resolved_schemas=None):
@@ -1234,14 +1335,27 @@ async def get_terminal_tools(
 
         async def make_tool_function(fn_name, srv_data, hdrs, cks):
             async def tool_function(**kwargs):
-                return await execute_tool_server(
+                tool_params = apply_terminal_tool_defaults(fn_name, kwargs)
+                response_data, response_headers = await execute_tool_server(
                     url=srv_data['url'],
                     headers=hdrs,
                     cookies=cks,
                     name=fn_name,
-                    params=kwargs,
+                    params=tool_params,
                     server_data=srv_data,
                 )
+                if fn_name == 'run_command':
+                    if isinstance(response_data, dict) and (
+                        response_data.get('status') == 'running' or response_data.get('exit_code') is None
+                    ):
+                        log.info(
+                            'OpenTerminal run_command still running after wait process_id=%s command=%s',
+                            response_data.get('id') or response_data.get('process_id'),
+                            response_data.get('command'),
+                        )
+                    return format_terminal_run_command_result(response_data)
+
+                return response_data, response_headers
 
             return tool_function
 
@@ -1409,6 +1523,7 @@ async def execute_tool_server(
 ) -> tuple[dict[str, Any], dict[str, Any | None]]:
     error = None
     try:
+        params = params or {}
         openapi = server_data.get('openapi', {})
         paths = openapi.get('paths', {})
 
@@ -1445,10 +1560,6 @@ async def execute_tool_server(
 
         http_method, operation = method_entry
 
-        path_params = {}
-        query_params = {}
-        body_params = {}
-
         # Merge path-level and operation-level parameters for execution.
         path_level_params = methods.get('parameters', [])
         if not isinstance(path_level_params, list):
@@ -1464,21 +1575,7 @@ async def execute_tool_server(
             if isinstance(param, dict) and param.get('name'):
                 merged_params[(param['name'], param.get('in', ''))] = param
 
-        for param in merged_params.values():
-            param_name = param.get('name')
-            if not param_name:
-                continue
-            param_in = param.get('in')
-            if param_name in params:
-                if param_in == 'path':
-                    path_params[param_name] = params[param_name]
-                if param_in == 'query':
-                    value = params[param_name]
-                    # Skip empty values for optional params (LLMs sometimes
-                    # pass "" instead of omitting optional parameters).
-                    if value is None or (value == '' and not param.get('required')):
-                        continue
-                    query_params[param_name] = value
+        path_params, query_params, body_params = split_openapi_tool_params(params, merged_params)
 
         final_url = f'{url.rstrip("/")}{route_path}'
         for key, value in path_params.items():
@@ -1487,9 +1584,8 @@ async def execute_tool_server(
         if query_params:
             final_url = f'{final_url}?{urlencode(query_params)}'
 
-        if operation.get('requestBody', {}).get('content'):
-            if params:
-                body_params = params
+        if not operation.get('requestBody', {}).get('content'):
+            body_params = {}
 
         async with aiohttp.ClientSession(
             trust_env=True, timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER)
