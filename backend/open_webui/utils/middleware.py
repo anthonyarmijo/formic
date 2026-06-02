@@ -2213,6 +2213,40 @@ def process_messages_with_output(
     For assistant messages with 'output' field, produces properly formatted
     OpenAI-style messages (tool_calls + tool results). Strips 'output' before LLM.
     """
+    def strip_tool_call_display_artifacts(content):
+        def clean_tool_details(match):
+            opening_tag = match.group(1)
+            body = match.group(2) or ''
+            if re.search(r'\bdone=["\']false["\']', opening_tag, flags=re.IGNORECASE):
+                return ''
+
+            body = re.sub(r'<summary>[\s\S]*?</summary>', '', body, flags=re.IGNORECASE).strip()
+            return html.unescape(body)
+
+        if isinstance(content, str):
+            return re.sub(
+                r'(<details\b(?=[^>]*\btype=["\']tool_calls["\'])[^>]*>)([\s\S]*?)</details>',
+                clean_tool_details,
+                content,
+                flags=re.IGNORECASE,
+            ).strip()
+
+        if isinstance(content, list):
+            cleaned_parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get('type') == 'text':
+                    cleaned_parts.append(
+                        {
+                            **part,
+                            'text': strip_tool_call_display_artifacts(part.get('text', '')),
+                        }
+                    )
+                else:
+                    cleaned_parts.append(part)
+            return cleaned_parts
+
+        return content
+
     processed = []
 
     for message in messages:
@@ -2227,8 +2261,12 @@ def process_messages_with_output(
                 processed.extend(output_messages)
                 continue
 
-        # Strip 'output' field before adding (LLM shouldn't see it)
+        # Strip 'output' field before adding (LLM shouldn't see it). If an
+        # older/pending display-only tool block was persisted without output
+        # items, do not feed its "Executing..." state back to the model.
         clean_message = {k: v for k, v in message.items() if k != 'output'}
+        if clean_message.get('role') == 'assistant':
+            clean_message['content'] = strip_tool_call_display_artifacts(clean_message.get('content'))
         processed.append(clean_message)
 
     return processed

@@ -688,6 +688,9 @@
 							lastReadAt={chat.last_read_at}
 							{shiftKey}
 							on:change={(e) => {
+								if (e.detail?.deletedChatId) {
+									chats = (chats ?? []).filter((chat) => chat.id !== e.detail.deletedChatId);
+								}
 								dispatch('change', e.detail);
 							}}
 						/>
