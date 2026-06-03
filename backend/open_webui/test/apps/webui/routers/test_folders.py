@@ -5,6 +5,7 @@ def test_sanitize_folder_list_data_keeps_only_workspace_sidebar_keys():
     data = {
         'group_type': 'project',
         'project_path': '/Users/example/dev/project',
+        'preview_url': 'http://127.0.0.1:5173',
         'tags': ['python', 'infra'],
         'workspace': 'work',
         'files': [{'id': 'private-file'}],
@@ -15,6 +16,7 @@ def test_sanitize_folder_list_data_keeps_only_workspace_sidebar_keys():
     assert sanitize_folder_list_data(data) == {
         'group_type': 'project',
         'project_path': '/Users/example/dev/project',
+        'preview_url': 'http://127.0.0.1:5173',
         'tags': ['python', 'infra'],
         'workspace': 'work',
     }

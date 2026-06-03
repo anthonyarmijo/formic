@@ -8,6 +8,7 @@ declare global {
 			setSessionToken?: (token: string) => Promise<boolean>;
 			clearSessionToken?: () => Promise<boolean>;
 			selectProjectDirectory?: () => Promise<string | null>;
+			openExternalUrl?: (url: string) => Promise<boolean>;
 		};
 	}
 

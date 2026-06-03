@@ -1,15 +1,14 @@
 <script lang="ts">
-	import { onMount, onDestroy, getContext } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
 	import { WebLinksAddon } from '@xterm/addon-web-links';
 	import '@xterm/xterm/css/xterm.css';
 
-	import { terminalServers, settings, selectedTerminalId, user } from '$lib/stores';
+	import { terminalServers, settings, selectedTerminalId, selectedFolder } from '$lib/stores';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
 
-	const i18n = getContext('i18n');
+	const FORMIC_LOCAL_TERMINAL_ID = 'formic-local-terminal';
 
 	export let overlay = false;
 	export let chatId: string | null = null;
@@ -22,23 +21,42 @@
 	export let connecting = false;
 	let resizeObserver: ResizeObserver | null = null;
 	let pingInterval: ReturnType<typeof setInterval> | null = null;
+	let terminalConnectionKey: string | null = null;
 
 	// Resolve the active terminal server's info for the WebSocket URL
-	const getTerminalInfo = (): { serverId: string; baseUrl: string } | null => {
+	const getTerminalInfo = (): { serverId: string; baseUrl: string; connectionKey: string } | null => {
 		// System terminal (admin-configured, has an `id`)
-		const systemTerminals = ($terminalServers ?? []).filter((t: any) => t.id);
-		const systemMatch = systemTerminals.find((t: any) => t.id === $selectedTerminalId);
+		const systemTerminals = (($terminalServers ?? []) as any[]).filter((t: any) => t.id);
+		const folder = $selectedFolder as any;
+		const projectAutoTerminal =
+			!$selectedTerminalId &&
+			folder?.data?.group_type === 'project' &&
+			folder?.data?.project_path
+				? systemTerminals.find((t: any) => t.id === FORMIC_LOCAL_TERMINAL_ID)
+				: null;
+		const systemMatch: any =
+			systemTerminals.find((t: any) => t.id === $selectedTerminalId) ?? projectAutoTerminal;
 		if (systemMatch) {
 			// For system terminals, WS goes through the Open WebUI backend proxy
-			return { serverId: systemMatch.id, baseUrl: WEBUI_API_BASE_URL };
+			return {
+				serverId: systemMatch.id,
+				baseUrl: WEBUI_API_BASE_URL,
+				connectionKey: `system:${systemMatch.id}:${chatId ?? ''}`
+			};
 		}
 
 		// Direct terminal (user-configured, matched by URL)
-		const directTerminals = ($settings?.terminalServers ?? []).filter((s: any) => s.url);
+		const directTerminals = ((($settings as any)?.terminalServers ?? []) as any[]).filter(
+			(s: any) => s.url
+		);
 		const directMatch = directTerminals.find((s: any) => s.url === $selectedTerminalId);
 		if (directMatch) {
 			// For direct terminals, construct WS URL from the server URL directly
-			return { serverId: '__direct__', baseUrl: directMatch.url };
+			return {
+				serverId: '__direct__',
+				baseUrl: directMatch.url,
+				connectionKey: `direct:${directMatch.url}:${chatId ?? ''}`
+			};
 		}
 
 		return null;
@@ -62,7 +80,9 @@
 			if (info.serverId === '__direct__') {
 				// Direct connection to open-terminal
 				const base = info.baseUrl.replace(/\/$/, '');
-				const directTerminals = ($settings?.terminalServers ?? []).filter((s: any) => s.url);
+				const directTerminals = ((($settings as any)?.terminalServers ?? []) as any[]).filter(
+					(s: any) => s.url
+				);
 				const directMatch = directTerminals.find((s: any) => s.url === $selectedTerminalId);
 				const apiKey = directMatch?.key ?? '';
 				authToken = apiKey;
@@ -258,12 +278,14 @@
 		// handler would write a spurious "[Connection closed]" message.
 	};
 
-	// Reconnect when the selected terminal changes
-	$: if ($selectedTerminalId !== undefined && term) {
-		// Clear the terminal screen and reconnect to the new server
+	$: resolvedTerminalConnectionKey = getTerminalInfo()?.connectionKey ?? null;
+
+	// Reconnect when the selected or Project auto terminal changes.
+	$: if (term && resolvedTerminalConnectionKey !== terminalConnectionKey) {
+		terminalConnectionKey = resolvedTerminalConnectionKey;
 		disconnect();
 		term.clear();
-		if ($selectedTerminalId) {
+		if (resolvedTerminalConnectionKey) {
 			connect();
 		}
 	}
@@ -282,5 +304,9 @@
 </script>
 
 <div class="h-full min-h-0 relative">
-	<div bind:this={terminalEl} class="absolute inset-0 px-0.5" class:pointer-events-none={overlay} />
+	<div
+		bind:this={terminalEl}
+		class="absolute inset-0 px-0.5"
+		class:pointer-events-none={overlay}
+	></div>
 </div>

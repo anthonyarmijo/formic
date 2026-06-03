@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-FOLDER_LIST_DATA_KEYS = {'group_type', 'project_path', 'tags', 'workspace'}
+FOLDER_LIST_DATA_KEYS = {'group_type', 'project_path', 'preview_url', 'tags', 'workspace'}
 
 
 def sanitize_folder_list_data(data: Optional[dict]) -> Optional[dict]:

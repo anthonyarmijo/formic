@@ -54,6 +54,8 @@
 
 	import { terminalOpen, terminalProjectPath } from '$lib/stores/terminal';
 	import TerminalDrawer from './TerminalDrawer.svelte';
+	import GroupContextStatus from './GroupContextStatus.svelte';
+	import ProjectPreviewPane from './ProjectPreviewPane.svelte';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
@@ -127,6 +129,7 @@
 
 	let messageInput: MessageInput | undefined;
 	let messagesRef: Messages | undefined;
+	let projectPreviewPane: any;
 	const FORMIC_LOCAL_TERMINAL_ID = 'formic-local-terminal';
 
 	let autoScroll = true;
@@ -147,16 +150,73 @@
 
 	let selectedModels = [''];
 	let atSelectedModel: Model | undefined;
-	let selectedModelIds = [];
+	let selectedModelIds: string[] = [];
 	$: if (atSelectedModel !== undefined) {
 		selectedModelIds = [atSelectedModel.id];
 	} else {
 		selectedModelIds = selectedModels;
 	}
 
+	$: selectedProjectFolder = $selectedFolder as any;
+	$: isProjectGroup =
+		selectedProjectFolder?.data?.group_type === 'project' &&
+		typeof selectedProjectFolder?.data?.project_path === 'string' &&
+		selectedProjectFolder.data.project_path.trim() !== '';
+	$: projectGroupPath = isProjectGroup ? selectedProjectFolder.data.project_path.trim() : '';
+	$: projectPreviewUrl =
+		isProjectGroup && typeof selectedProjectFolder?.data?.preview_url === 'string'
+			? selectedProjectFolder.data.preview_url.trim()
+			: '';
+	$: projectSystemTerminals = (($terminalServers ?? []) as any[]).filter(
+		(terminal) => terminal.id
+	);
+	$: projectDirectTerminals = ((($settings as any)?.terminalServers ?? []) as any[]).filter(
+		(terminal) => terminal.url
+	);
+	$: localProjectTerminalAvailableForGroup = projectSystemTerminals.some(
+		(terminal) => terminal.id === FORMIC_LOCAL_TERMINAL_ID
+	);
+	$: activeProjectTerminalId =
+		$selectedTerminalId ??
+		(isProjectGroup && localProjectTerminalAvailableForGroup ? FORMIC_LOCAL_TERMINAL_ID : null);
+	$: activeProjectSystemTerminal = projectSystemTerminals.find(
+		(terminal) => terminal.id === activeProjectTerminalId
+	);
+	$: activeProjectDirectTerminal = projectDirectTerminals.find(
+		(terminal) => terminal.url === activeProjectTerminalId
+	);
+	$: activeProjectTerminalName =
+		activeProjectSystemTerminal?.name ||
+		activeProjectSystemTerminal?.id ||
+		activeProjectDirectTerminal?.name ||
+		activeProjectDirectTerminal?.url?.replace(/^https?:\/\//, '') ||
+		'';
+	$: activeProjectTerminalProvider = activeProjectSystemTerminal
+		? 'system'
+		: activeProjectDirectTerminal
+			? 'direct'
+			: activeProjectTerminalId
+				? 'missing'
+				: 'none';
+	$: projectTerminalToolsAvailable =
+		Boolean(activeProjectTerminalId) &&
+		selectedModelIds
+			.filter((id) => id)
+			.every(
+				(id) =>
+					(($models.find((model) => model.id === id)?.info?.meta?.capabilities as any)?.terminal ??
+						true)
+			);
+	$: if (isProjectGroup && projectGroupPath) {
+		terminalProjectPath.set(projectGroupPath);
+	}
+
 	let selectedToolIds = [];
 	let selectedFilterIds = [];
 	let pendingOAuthTools = [];
+	let pendingPreviewContext: any = null;
+	let previewAutoAttach = false;
+	let previewPersistTimer: ReturnType<typeof setTimeout> | null = null;
 
 	let imageGenerationEnabled = false;
 	let webSearchEnabled = false;
@@ -738,6 +798,120 @@
 		savedModelIds();
 	}
 
+	const persistPreviewUrl = (url: string) => {
+		const activeFolder = selectedProjectFolder as any;
+		const activeFolderId = activeFolder?.id;
+		if (!isProjectGroup || !activeFolderId) return;
+		const nextUrl = url.trim();
+		if (nextUrl === (activeFolder?.data?.preview_url ?? '')) return;
+
+		if (previewPersistTimer) {
+			clearTimeout(previewPersistTimer);
+		}
+
+		previewPersistTimer = setTimeout(async () => {
+			const currentFolder = get(selectedFolder) as any;
+			if (!currentFolder?.id || currentFolder.id !== activeFolderId) return;
+
+			const data = {
+				...(currentFolder.data ?? {}),
+				preview_url: nextUrl
+			};
+
+			selectedFolder.set({
+				...currentFolder,
+				data
+			});
+
+			await updateFolderById(localStorage.token, currentFolder.id, {
+				data: {
+					preview_url: nextUrl
+				}
+			}).catch((error) => {
+				toast.error(`${error}`);
+			});
+		}, 600);
+	};
+
+	const previewContextAsPromptText = (context: any) => {
+		const consoleLines = (context?.console ?? [])
+			.slice(-12)
+			.map((item: any) => `- [${item.level ?? 'info'}] ${item.message ?? ''}`)
+			.join('\n');
+		const networkLines = (context?.network ?? [])
+			.slice(-16)
+			.map((item: any) => {
+				const duration = Number.isFinite(item.duration_ms) ? `${item.duration_ms}ms` : 'unknown';
+				return `- ${item.initiator_type ?? 'resource'} ${item.name ?? ''} (${duration})`;
+			})
+			.join('\n');
+
+		return [
+			'<formic_project_preview_context>',
+			`Captured at: ${context?.captured_at ?? new Date().toISOString()}`,
+			`URL: ${context?.url ?? ''}`,
+			`Title: ${context?.title ?? ''}`,
+			context?.viewport
+				? `Viewport: ${context.viewport.width}x${context.viewport.height} @ ${context.viewport.device_pixel_ratio}x`
+				: '',
+			'',
+			'Visible text:',
+			(context?.text ?? '').slice(0, 12000),
+			'',
+			'Bounded DOM:',
+			(context?.dom ?? '').slice(0, 18000),
+			consoleLines ? `\nConsole:\n${consoleLines}` : '',
+			networkLines ? `\nNetwork:\n${networkLines}` : '',
+			'</formic_project_preview_context>'
+		]
+			.filter((line) => line !== '')
+			.join('\n');
+	};
+
+	const previewScreenshotFile = (context: any) => {
+		if (!context?.screenshot) return null;
+		const safeTitle = (context?.title || 'project-preview')
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '-')
+			.replace(/^-|-$/g, '')
+			.slice(0, 48);
+
+		return {
+			type: 'image',
+			url: context.screenshot,
+			name: `${safeTitle || 'project-preview'}-screenshot.png`
+		};
+	};
+
+	const getPreviewContextForSubmit = async () => {
+		if (!isProjectGroup) return null;
+
+		if (previewAutoAttach) {
+			const context = await projectPreviewPane?.captureContext({ silent: true });
+			if (context) {
+				return context;
+			}
+			return pendingPreviewContext;
+		}
+
+		const context = pendingPreviewContext;
+		pendingPreviewContext = null;
+		return context;
+	};
+
+	const attachPreviewContextToSubmit = async (inputContent: string, inputFiles: any[]) => {
+		const context = await getPreviewContextForSubmit();
+		if (!context) {
+			return { content: inputContent, files: inputFiles };
+		}
+
+		const screenshot = previewScreenshotFile(context);
+		return {
+			content: `${inputContent}\n\n${previewContextAsPromptText(context)}`,
+			files: screenshot ? [...inputFiles, screenshot] : inputFiles
+		};
+	};
+
 	const stopAudio = () => {
 		try {
 			speechSynthesis.cancel();
@@ -862,6 +1036,9 @@
 		return () => {
 			try {
 				clearTimeout(saveControlsTimer);
+				if (previewPersistTimer) {
+					clearTimeout(previewPersistTimer);
+				}
 				saveControls();
 				if (chatIdProp && !$temporaryChatEnabled) {
 					updateLastReadAt(chatIdProp);
@@ -2012,10 +2189,13 @@
 		if (isGenerating) {
 			if ($settings?.enableMessageQueue ?? true) {
 				// Enqueue the request
-				const _files = structuredClone(files);
+				const previewAttached = await attachPreviewContextToSubmit(userPrompt, structuredClone(files));
 				chatRequestQueues.update((q) => ({
 					...q,
-					[$chatId]: [...(q[$chatId] ?? []), { id: uuidv4(), prompt: userPrompt, files: _files }]
+					[$chatId]: [
+						...(q[$chatId] ?? []),
+						{ id: uuidv4(), prompt: previewAttached.content, files: previewAttached.files }
+					]
 				}));
 				// Clear input
 				messageInput?.setText('');
@@ -2042,11 +2222,12 @@
 		// Clear input and submit
 		messageInput?.setText('');
 		prompt = '';
-		const _files = structuredClone(files);
+		const previewAttached = await attachPreviewContextToSubmit(userPrompt, structuredClone(files));
+		const _files = previewAttached.files;
 		files = [];
 		messageInput?.setText('');
 
-		await submitPrompt(userPrompt, _files);
+		await submitPrompt(previewAttached.content, _files);
 	};
 
 	const sendMessage = async (
@@ -3067,6 +3248,17 @@
 						}}
 					/>
 
+					{#if isProjectGroup}
+						<GroupContextStatus
+							folder={$selectedFolder}
+							chatId={$chatId || null}
+							activeTerminalId={activeProjectTerminalId}
+							activeTerminalName={activeProjectTerminalName}
+							activeTerminalProvider={activeProjectTerminalProvider}
+							terminalToolsAvailable={projectTerminalToolsAvailable}
+						/>
+					{/if}
+
 					<div id="chat-pane" class="flex flex-col flex-auto z-10 w-full @container overflow-auto">
 						{#if ($settings?.landingPageMode === 'chat' && !$selectedFolder) || createMessagesList(history, history.currentId).length > 0}
 							<div
@@ -3227,14 +3419,41 @@
 							</div>
 						{/if}
 					</div>
+
+					{#if isProjectGroup}
+						<TerminalDrawer
+							bind:open={$terminalOpen}
+							projectPath={projectGroupPath}
+							folderId={selectedProjectFolder.id}
+						/>
+					{/if}
 				</Pane>
 
-				{#if $selectedFolder?.data?.group_type === 'project' && $selectedFolder?.data?.project_path}
-					<TerminalDrawer
-						bind:open={$terminalOpen}
-						projectPath={$selectedFolder.data.project_path}
-						folderId={$selectedFolder.id}
-					/>
+				{#if isProjectGroup}
+					<PaneResizer
+						class="relative z-20 flex items-center justify-center border-l border-gray-50 transition hover:border-gray-200 dark:border-gray-850/30 dark:hover:border-gray-800"
+						id="project-preview-resizer"
+					>
+						<div
+							class="absolute -bottom-0 -left-1.5 -right-1.5 -top-0 z-20 cursor-col-resize bg-transparent"
+						></div>
+					</PaneResizer>
+					<Pane defaultSize={34} minSize={20} maxSize={55} class="z-10 min-w-0 bg-white dark:bg-gray-950">
+						<ProjectPreviewPane
+							bind:this={projectPreviewPane}
+							folderId={selectedProjectFolder.id}
+							initialUrl={projectPreviewUrl}
+							bind:autoAttach={previewAutoAttach}
+							on:urlchange={(event) => persistPreviewUrl(event.detail.url)}
+							on:captured={(event) => {
+								pendingPreviewContext = event.detail.context;
+								toast.success($i18n.t('Preview context attached'));
+							}}
+							on:error={(event) => {
+								toast.error(event.detail.message);
+							}}
+						/>
+					</Pane>
 				{/if}
 
 				<ChatControls

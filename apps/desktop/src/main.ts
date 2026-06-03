@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, type OpenDialogOptions } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, type OpenDialogOptions } from 'electron';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -1229,8 +1229,35 @@ async function createWindow(): Promise<void> {
 		webPreferences: {
 			contextIsolation: true,
 			nodeIntegration: false,
+			webviewTag: true,
 			preload: path.join(__dirname, 'preload.cjs')
 		}
+	});
+
+	window.webContents.setWindowOpenHandler(({ url }) => {
+		void openExternalUrl(url);
+		return { action: 'deny' };
+	});
+
+	window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+		if (!isAllowedPreviewUrl(params.src)) {
+			event.preventDefault();
+			return;
+		}
+
+		delete webPreferences.preload;
+		webPreferences.nodeIntegration = false;
+		webPreferences.contextIsolation = true;
+		webPreferences.sandbox = true;
+		webPreferences.webSecurity = true;
+		webPreferences.allowRunningInsecureContent = false;
+	});
+
+	window.webContents.on('did-attach-webview', (_event, webContents) => {
+		webContents.setWindowOpenHandler(({ url }) => {
+			void openExternalUrl(url);
+			return { action: 'deny' };
+		});
 	});
 
 	await window.loadURL(htmlDataUrl(startupHtml()));
@@ -1318,6 +1345,35 @@ ipcMain.handle('formic:select-project-directory', async () => {
 
 	return result.filePaths[0];
 });
+
+function isAllowedPreviewUrl(value: string | undefined): boolean {
+	if (!value) {
+		return false;
+	}
+
+	try {
+		const url = new URL(value);
+		return url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'about:';
+	} catch {
+		return false;
+	}
+}
+
+async function openExternalUrl(value: unknown): Promise<boolean> {
+	if (typeof value !== 'string' || !isAllowedPreviewUrl(value)) {
+		return false;
+	}
+
+	const url = new URL(value);
+	if (url.protocol === 'about:') {
+		return false;
+	}
+
+	await shell.openExternal(url.toString());
+	return true;
+}
+
+ipcMain.handle('formic:open-external-url', async (_event, url: unknown) => openExternalUrl(url));
 
 ipcMain.handle('formic:get-session-token', () => getDesktopSessionToken());
 
